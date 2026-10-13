@@ -94,6 +94,11 @@ export default function AdminPage() {
 
   const cajaTotal = cajaInicial + totalCobrado;
 
+  // Calculamos las categorías únicas mezclando unas por defecto con las que ya existan en la BD
+  const predefinedCategories = Array.from(
+    new Set(['Ropa', 'Insignias', 'Libros', 'Material', 'Otros', ...products.map((p) => p.category)])
+  );
+
   useEffect(() => {
     if (isLoggedIn) fetchData();
   }, [isLoggedIn]);
@@ -349,7 +354,7 @@ export default function AdminPage() {
     if (!window.confirm('¿Seguro que quieres eliminar esta talla/producto?')) return;
     const { error } = await supabase.from('product_variants').delete().eq('id', variantId);
     if (error) {
-      alert('⚠️️ No puedes borrar este artículo porque hay pedidos asociados. Pon el stock a 0.');
+      alert('⚠ No puedes borrar este artículo porque hay pedidos asociados. Pon el stock a 0.');
     } else {
       const productoAfectado = products.find((p) => p.id === productId);
       if (productoAfectado && productoAfectado.product_variants.length === 1) {
@@ -952,15 +957,23 @@ export default function AdminPage() {
                               <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase tracking-wider">
                                 Categoría
                               </label>
+                              {/* DATALIST: Permite escribir o seleccionar categoría predefinida */}
                               <input
+                                list="category-options"
                                 type="text"
                                 required
+                                placeholder="Selecciona o escribe una nueva..."
                                 value={newProduct.category}
                                 onChange={(e) =>
                                   setNewProduct({ ...newProduct, category: e.target.value })
                                 }
-                                className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs"
+                                className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs outline-none focus:border-purple-600"
                               />
+                              <datalist id="category-options">
+                                {predefinedCategories.map((cat, idx) => (
+                                  <option key={idx} value={cat} />
+                                ))}
+                              </datalist>
                             </div>
                           </div>
                           <div>
@@ -1236,13 +1249,21 @@ export default function AdminPage() {
                   <label className="block font-bold text-slate-700 mb-1 uppercase tracking-wider">
                     Categoría
                   </label>
+                  {/* DATALIST: Aplicado también en el menú de editar */}
                   <input
+                    list="category-options-edit"
                     type="text"
                     required
+                    placeholder="Selecciona o escribe..."
                     value={editingItem.category}
                     onChange={(e) => setEditingItem({ ...editingItem, category: e.target.value })}
                     className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:border-purple-600"
                   />
+                  <datalist id="category-options-edit">
+                    {predefinedCategories.map((cat, idx) => (
+                      <option key={idx} value={cat} />
+                    ))}
+                  </datalist>
                 </div>
               </div>
               <div>
