@@ -40,6 +40,13 @@ interface Order {
   order_items?: OrderItem[];
 }
 
+// Orden lógico de tallas para que no salgan desordenadas
+const SIZE_ORDER = [
+  'Única', 'Unitalla', 
+  '3/4', '4', '5/6', '6', '7/8', '8', '9/10', '10', '11/12', '12', '13/14', '14', '16',
+  'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'
+];
+
 export default function AdminPage() {
   const [cajaInicial, setCajaInicial] = useState<number>(0);
 
@@ -59,7 +66,7 @@ export default function AdminPage() {
   const [newProduct, setNewProduct] = useState({
     name: '',
     description: '',
-    category: 'Ropa',
+    category: '',
     min_stock_alert: 5,
     size: 'M',
     price: 15,
@@ -94,7 +101,6 @@ export default function AdminPage() {
 
   const cajaTotal = cajaInicial + totalCobrado;
 
-  // Calculamos las categorías únicas mezclando unas por defecto con las que ya existan en la BD
   const predefinedCategories = Array.from(
     new Set(['Ropa', 'Insignias', 'Libros', 'Material', 'Otros', ...products.map((p) => p.category)])
   );
@@ -136,10 +142,22 @@ export default function AdminPage() {
         .order('created_at', { ascending: false });
       if (oData) pedidosPlano = oData;
 
-      const inventarioCompleto = productosPlano.map((p) => ({
-        ...p,
-        product_variants: variantesPlano.filter((v) => String(v.product_id) === String(p.id))
-      }));
+      const inventarioCompleto = productosPlano.map((p) => {
+        const variantes = variantesPlano
+          .filter((v) => String(v.product_id) === String(p.id))
+          .sort((a, b) => {
+            const idxA = SIZE_ORDER.indexOf(a.size);
+            const idxB = SIZE_ORDER.indexOf(b.size);
+            if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+            if (idxA !== -1) return -1;
+            if (idxB !== -1) return 1;
+            return a.size.localeCompare(b.size);
+          });
+        return {
+          ...p,
+          product_variants: variantes
+        };
+      });
       setProducts(inventarioCompleto.filter((p) => p.product_variants.length > 0) as Product[]);
 
       const pedidosCompletos = pedidosPlano.map((pedido) => {
@@ -350,11 +368,11 @@ export default function AdminPage() {
     await supabase.from('product_variants').update({ stock: newStock }).eq('id', variantId);
   };
 
-  const handleDeleteVariant = async (variantId: string, productId: string) => {
-    if (!window.confirm('¿Seguro que quieres eliminar esta talla/producto?')) return;
+  const handleDeleteVariant = async (variantId: string, productId: string, sizeName: string) => {
+    if (!window.confirm(`¿Seguro que quieres eliminar la talla "${sizeName}" de este producto?`)) return;
     const { error } = await supabase.from('product_variants').delete().eq('id', variantId);
     if (error) {
-      alert('⚠ No puedes borrar este artículo porque hay pedidos asociados. Pon el stock a 0.');
+      alert('⚠ No puedes borrar esta talla porque hay pedidos asociados. Pon su stock a 0.');
     } else {
       const productoAfectado = products.find((p) => p.id === productId);
       if (productoAfectado && productoAfectado.product_variants.length === 1) {
@@ -387,6 +405,10 @@ export default function AdminPage() {
     setLoading(true);
     let productIdToUse = selectedProductId;
 
+    const minStockToSave = Number.isNaN(newProduct.min_stock_alert) ? 5 : newProduct.min_stock_alert;
+    const priceToSave = Number.isNaN(newProduct.price) ? 0 : newProduct.price;
+    const stockToSave = Number.isNaN(newProduct.stock) ? 0 : newProduct.stock;
+
     if (selectedProductId === 'new') {
       const { data: prodData, error: prodErr } = await supabase
         .from('products')
@@ -396,7 +418,7 @@ export default function AdminPage() {
             category: newProduct.category,
             description: newProduct.description,
             image_url: finalImageUrl,
-            min_stock_alert: newProduct.min_stock_alert
+            min_stock_alert: minStockToSave
           }
         ])
         .select('id')
@@ -411,16 +433,21 @@ export default function AdminPage() {
     } else {
       await supabase
         .from('products')
-        .update({ min_stock_alert: newProduct.min_stock_alert })
+        .update({ min_stock_alert: minStockToSave })
         .eq('id', productIdToUse);
+      // Sincronizamos el precio con el resto de tallas del mismo producto por si lo ha cambiado
+      await supabase
+        .from('product_variants')
+        .update({ price: priceToSave })
+        .eq('product_id', productIdToUse);
     }
 
     const { error: varErr } = await supabase.from('product_variants').insert([
       {
         product_id: productIdToUse,
         size: newProduct.size,
-        price: newProduct.price,
-        stock: newProduct.stock
+        price: priceToSave,
+        stock: stockToSave
       }
     ]);
 
@@ -432,7 +459,7 @@ export default function AdminPage() {
       setNewProduct({
         name: '',
         description: '',
-        category: 'Ropa',
+        category: '',
         min_stock_alert: 5,
         size: 'M',
         price: 15,
@@ -467,6 +494,10 @@ export default function AdminPage() {
       finalImageUrl = publicUrlData.publicUrl;
     }
 
+    const minStockToSave = Number.isNaN(editingItem.min_stock_alert) ? 5 : editingItem.min_stock_alert;
+    const priceToSave = Number.isNaN(editingItem.price) ? 0 : editingItem.price;
+
+    // 1. Actualizamos los datos generales del producto
     await supabase
       .from('products')
       .update({
@@ -474,14 +505,23 @@ export default function AdminPage() {
         category: editingItem.category,
         description: editingItem.description,
         image_url: finalImageUrl,
-        min_stock_alert: editingItem.min_stock_alert
+        min_stock_alert: minStockToSave
       })
       .eq('id', editingItem.productId);
 
+    // 2. Actualizamos el precio en TODAS las tallas de ese producto para que siempre valgan lo mismo
     await supabase
       .from('product_variants')
-      .update({ size: editingItem.size, price: editingItem.price })
-      .eq('id', editingItem.variantId);
+      .update({ price: priceToSave })
+      .eq('product_id', editingItem.productId);
+
+    // 3. Si se editó el nombre de una talla concreta, lo guardamos
+    if (editingItem.variantId) {
+      await supabase
+        .from('product_variants')
+        .update({ size: editingItem.size })
+        .eq('id', editingItem.variantId);
+    }
 
     setEditingItem(null);
     setEditImageFile(null);
@@ -489,14 +529,24 @@ export default function AdminPage() {
     fetchData();
   };
 
-  const handleSelectProduct = (id: string, name: string, category: string, minStock: number) => {
+  const handleSelectProduct = (
+    id: string,
+    name: string,
+    category: string,
+    minStock: number,
+    existingPrice?: number
+  ) => {
     setSelectedProductId(id);
     setIsDropdownOpen(false);
     if (id === 'new') {
       setProductSearchInput('');
     } else {
       setProductSearchInput(`${name} (${category})`);
-      setNewProduct((prev) => ({ ...prev, min_stock_alert: minStock }));
+      setNewProduct((prev) => ({
+        ...prev,
+        min_stock_alert: minStock,
+        price: existingPrice !== undefined ? existingPrice : prev.price
+      }));
     }
   };
 
@@ -872,7 +922,7 @@ export default function AdminPage() {
                       onClick={() => setShowAddForm(!showAddForm)}
                       className="w-full sm:w-auto bg-slate-900 hover:bg-slate-800 text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-xs"
                     >
-                      {showAddForm ? '❌ Cancelar' : '➕ Añadir Artículo'}
+                      {showAddForm ? '❌ Cancelar' : '➕ Añadir Artículo / Talla'}
                     </button>
                   </div>
 
@@ -911,24 +961,35 @@ export default function AdminPage() {
                           <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-60 overflow-y-auto py-1">
                             <div
                               className="px-4 py-3 hover:bg-purple-50 cursor-pointer text-xs font-bold text-purple-700 flex items-center gap-2"
-                              onClick={() => handleSelectProduct('new', '', '', 5)}
+                              onClick={() => handleSelectProduct('new', '', '', 5, 15)}
                             >
                               <span>✨</span> Crear producto completamente nuevo...
                             </div>
-                            {filteredProductsForSelect.map((p) => (
-                              <div
-                                key={p.id}
-                                className="px-4 py-2.5 hover:bg-slate-50 cursor-pointer text-xs font-medium text-slate-700 border-t border-slate-50 flex items-center justify-between"
-                                onClick={() =>
-                                  handleSelectProduct(p.id, p.name, p.category, p.min_stock_alert ?? 5)
-                                }
-                              >
-                                <span>
-                                  {p.name}{' '}
-                                  <span className="text-slate-400 ml-1">({p.category})</span>
-                                </span>
-                              </div>
-                            ))}
+                            {filteredProductsForSelect.map((p) => {
+                              const currentPrice = p.product_variants[0]?.price ?? 15;
+                              return (
+                                <div
+                                  key={p.id}
+                                  className="px-4 py-2.5 hover:bg-slate-50 cursor-pointer text-xs font-medium text-slate-700 border-t border-slate-50 flex items-center justify-between"
+                                  onClick={() =>
+                                    handleSelectProduct(
+                                      p.id,
+                                      p.name,
+                                      p.category,
+                                      p.min_stock_alert ?? 5,
+                                      currentPrice
+                                    )
+                                  }
+                                >
+                                  <span>
+                                    {p.name}{' '}
+                                    <span className="text-slate-400 ml-1">
+                                      ({p.category} - {currentPrice.toFixed(2)}€)
+                                    </span>
+                                  </span>
+                                </div>
+                              );
+                            })}
                             {filteredProductsForSelect.length === 0 && (
                               <div className="px-4 py-3 text-xs text-slate-400 text-center border-t border-slate-50">
                                 No hay productos que coincidan.
@@ -957,7 +1018,6 @@ export default function AdminPage() {
                               <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase tracking-wider">
                                 Categoría
                               </label>
-                              {/* DATALIST: Permite escribir o seleccionar categoría predefinida */}
                               <input
                                 list="category-options"
                                 type="text"
@@ -1009,7 +1069,7 @@ export default function AdminPage() {
                               Añadiendo nueva talla
                             </p>
                             <p className="text-[11px] text-blue-600 font-medium leading-relaxed">
-                              Estás añadiendo una nueva talla a un producto existente.
+                              Estás añadiendo una nueva talla a un producto existente. El precio se ha autorellenado con el del producto.
                             </p>
                           </div>
                         </div>
@@ -1022,11 +1082,11 @@ export default function AdminPage() {
                         <input
                           type="number"
                           required
-                          value={newProduct.min_stock_alert}
+                          value={Number.isNaN(newProduct.min_stock_alert) ? '' : newProduct.min_stock_alert}
                           onChange={(e) =>
                             setNewProduct({
                               ...newProduct,
-                              min_stock_alert: parseInt(e.target.value) || 5
+                              min_stock_alert: parseInt(e.target.value, 10)
                             })
                           }
                           className="w-full sm:w-1/3 p-2.5 bg-white border border-slate-200 rounded-xl text-xs"
@@ -1048,13 +1108,13 @@ export default function AdminPage() {
                         </div>
                         <div>
                           <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                            Precio (€)
+                            Precio del Producto (€)
                           </label>
                           <input
                             type="number"
                             step="0.50"
                             required
-                            value={newProduct.price}
+                            value={Number.isNaN(newProduct.price) ? '' : newProduct.price}
                             onChange={(e) =>
                               setNewProduct({ ...newProduct, price: parseFloat(e.target.value) })
                             }
@@ -1068,9 +1128,9 @@ export default function AdminPage() {
                           <input
                             type="number"
                             required
-                            value={newProduct.stock}
+                            value={Number.isNaN(newProduct.stock) ? '' : newProduct.stock}
                             onChange={(e) =>
-                              setNewProduct({ ...newProduct, stock: parseInt(e.target.value) })
+                              setNewProduct({ ...newProduct, stock: parseInt(e.target.value, 10) })
                             }
                             className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs"
                           />
@@ -1087,124 +1147,169 @@ export default function AdminPage() {
                     </form>
                   )}
 
+                  {/* NUEVA TABLA AGRUPADA POR PRODUCTO */}
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs">
                       <thead className="bg-slate-50 text-slate-400 uppercase tracking-wider border-b border-slate-100">
                         <tr>
                           <th className="p-4 font-bold">Producto</th>
                           <th className="p-4 font-bold">Categoría</th>
-                          <th className="p-4 font-bold text-center">Talla</th>
                           <th className="p-4 font-bold text-right">Precio</th>
-                          <th className="p-4 font-bold text-right">Stock</th>
-                          <th className="p-4"></th>
+                          <th className="p-4 font-bold">Tallas y Control de Stock</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {filteredProducts.map((product) => {
                           const minAlert = product.min_stock_alert || 5;
+                          const productPrice = product.product_variants[0]?.price || 0;
 
-                          return product.product_variants.map((variant) => {
-                            const isLowStock = variant.stock <= minAlert;
-
-                            return (
-                              <tr
-                                key={variant.id}
-                                className="hover:bg-slate-50/60 transition-colors group"
-                              >
-                                <td className="p-4 font-bold text-slate-900 flex items-center gap-3">
+                          return (
+                            <tr
+                              key={product.id}
+                              className="hover:bg-slate-50/40 transition-colors align-top"
+                            >
+                              {/* 1. PRODUCTO + BOTÓN EDITAR GENERAL */}
+                              <td className="p-4 font-bold text-slate-900">
+                                <div className="flex items-center gap-3">
                                   {product.image_url ? (
                                     <img
                                       src={product.image_url}
                                       alt=""
-                                      className="w-8 h-8 rounded bg-slate-100 object-cover"
+                                      className="w-11 h-11 rounded-xl bg-slate-100 object-cover border border-slate-200/60 shrink-0"
                                     />
                                   ) : (
-                                    <div className="w-8 h-8 rounded bg-slate-100 flex items-center justify-center text-slate-400">
+                                    <div className="w-11 h-11 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 text-base shrink-0">
                                       ⛺
                                     </div>
                                   )}
-                                  {product.name}
-                                </td>
-                                <td className="p-4">
-                                  <span className="bg-purple-50 text-purple-700 font-semibold px-2.5 py-1 rounded-md">
-                                    {product.category}
-                                  </span>
-                                </td>
-                                <td className="p-4 font-bold text-center text-slate-700">
-                                  {variant.size}
-                                </td>
-                                <td className="p-4 font-semibold text-right text-slate-600">
-                                  {variant.price.toFixed(2)} €
-                                </td>
-                                <td className="p-4 text-right">
-                                  <div className="flex items-center justify-end gap-1.5">
+                                  <div>
+                                    <div className="text-sm font-black text-slate-900">
+                                      {product.name}
+                                    </div>
                                     <button
                                       onClick={() =>
-                                        handleBulkChange(variant.id, variant.stock, 'subtract')
+                                        setEditingItem({
+                                          productId: product.id,
+                                          variantId: product.product_variants[0]?.id || '',
+                                          name: product.name,
+                                          category: product.category,
+                                          description: product.description || '',
+                                          image_url: product.image_url || '',
+                                          min_stock_alert: product.min_stock_alert ?? 5,
+                                          size: product.product_variants[0]?.size || '',
+                                          price: productPrice
+                                        })
                                       }
-                                      className="bg-red-50 hover:bg-red-100 text-red-600 px-2 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-xs"
+                                      className="text-[10px] text-purple-600 hover:text-purple-800 font-bold flex items-center gap-1 mt-1 transition-colors"
                                     >
-                                      Quitar
-                                    </button>
-                                    <button
-                                      onClick={() => handleStockChange(variant.id, variant.stock, -1)}
-                                      className="bg-slate-100 hover:bg-slate-200 text-slate-700 w-7 h-7 rounded-lg font-bold flex items-center justify-center transition-colors shadow-xs"
-                                    >
-                                      -
-                                    </button>
-                                    {/* SOLO EL NÚMERO EN ROJO Y NEGRITA SI ESTÁ BAJO */}
-                                    <span
-                                      className={`min-w-[28px] text-center text-sm ${
-                                        isLowStock
-                                          ? 'text-red-600 font-black'
-                                          : 'text-slate-800 font-bold'
-                                      }`}
-                                    >
-                                      {variant.stock}
-                                    </span>
-                                    <button
-                                      onClick={() => handleStockChange(variant.id, variant.stock, 1)}
-                                      className="bg-slate-100 hover:bg-slate-200 text-slate-700 w-7 h-7 rounded-lg font-bold flex items-center justify-center transition-colors shadow-xs"
-                                    >
-                                      +
-                                    </button>
-                                    <button
-                                      onClick={() => handleBulkChange(variant.id, variant.stock, 'add')}
-                                      className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 px-2 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-xs"
-                                    >
-                                      Poner
+                                      <span>✏️</span> Editar producto / precio
                                     </button>
                                   </div>
-                                </td>
-                                <td className="p-4 text-center w-24 whitespace-nowrap">
-                                  <button
-                                    onClick={() =>
-                                      setEditingItem({
-                                        productId: product.id,
-                                        variantId: variant.id,
-                                        name: product.name,
-                                        category: product.category,
-                                        description: product.description || '',
-                                        image_url: product.image_url || '',
-                                        min_stock_alert: product.min_stock_alert ?? 5,
-                                        size: variant.size,
-                                        price: variant.price
-                                      })
-                                    }
-                                    className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-purple-600 transition-all mr-3 text-sm"
-                                  >
-                                    ✏️
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteVariant(variant.id, product.id)}
-                                    className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-600 transition-all text-sm"
-                                  >
-                                    🗑️
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          });
+                                </div>
+                              </td>
+
+                              {/* 2. CATEGORÍA */}
+                              <td className="p-4 pt-5">
+                                <span className="bg-purple-50 text-purple-700 font-semibold px-2.5 py-1 rounded-md">
+                                  {product.category}
+                                </span>
+                              </td>
+
+                              {/* 3. PRECIO ÚNICO */}
+                              <td className="p-4 pt-5 font-black text-right text-slate-800 text-sm whitespace-nowrap">
+                                {productPrice.toFixed(2)} €
+                              </td>
+
+                              {/* 4. LISTA COMPACTA DE TALLAS */}
+                              <td className="p-4">
+                                <div className="flex flex-col gap-2">
+                                  {product.product_variants.map((variant) => {
+                                    const isLowStock = variant.stock <= minAlert;
+
+                                    return (
+                                      <div
+                                        key={variant.id}
+                                        className="flex items-center justify-between gap-4 bg-white border border-slate-200/80 px-3 py-2 rounded-xl shadow-2xs hover:border-purple-200 transition-colors"
+                                      >
+                                        {/* Etiqueta de Talla */}
+                                        <div className="flex items-center gap-2">
+                                          <span className="bg-slate-100 text-slate-800 font-black px-2.5 py-1 rounded-lg min-w-[48px] text-center text-xs">
+                                            {variant.size}
+                                          </span>
+                                          {isLowStock && (
+                                            <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full">
+                                              ⚠️ Stock bajo
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        {/* Controles de Stock y Borrado de Talla */}
+                                        <div className="flex items-center gap-1.5">
+                                          <button
+                                            onClick={() =>
+                                              handleBulkChange(variant.id, variant.stock, 'subtract')
+                                            }
+                                            className="bg-red-50 hover:bg-red-100 text-red-600 px-2 py-1 rounded-lg text-[11px] font-bold transition-colors"
+                                          >
+                                            Quitar
+                                          </button>
+                                          <button
+                                            onClick={() =>
+                                              handleStockChange(variant.id, variant.stock, -1)
+                                            }
+                                            className="bg-slate-100 hover:bg-slate-200 text-slate-700 w-7 h-7 rounded-lg font-bold flex items-center justify-center transition-colors"
+                                          >
+                                            -
+                                          </button>
+                                          <span
+                                            className={`min-w-[28px] text-center text-sm ${
+                                              isLowStock
+                                                ? 'text-red-600 font-black'
+                                                : 'text-slate-800 font-bold'
+                                            }`}
+                                          >
+                                            {variant.stock}
+                                          </span>
+                                          <button
+                                            onClick={() =>
+                                              handleStockChange(variant.id, variant.stock, 1)
+                                            }
+                                            className="bg-slate-100 hover:bg-slate-200 text-slate-700 w-7 h-7 rounded-lg font-bold flex items-center justify-center transition-colors"
+                                          >
+                                            +
+                                          </button>
+                                          <button
+                                            onClick={() =>
+                                              handleBulkChange(variant.id, variant.stock, 'add')
+                                            }
+                                            className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 px-2 py-1 rounded-lg text-[11px] font-bold transition-colors"
+                                          >
+                                            Poner
+                                          </button>
+
+                                          <div className="h-4 w-[1px] bg-slate-200 mx-1"></div>
+
+                                          <button
+                                            onClick={() =>
+                                              handleDeleteVariant(
+                                                variant.id,
+                                                product.id,
+                                                variant.size
+                                              )
+                                            }
+                                            className="text-slate-300 hover:text-red-600 transition-colors p-1"
+                                            title={`Eliminar talla ${variant.size}`}
+                                          >
+                                            🗑️
+                                          </button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </td>
+                            </tr>
+                          );
                         })}
                       </tbody>
                     </table>
@@ -1220,7 +1325,7 @@ export default function AdminPage() {
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-100">
             <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <h3 className="font-bold text-slate-900 text-base">✏️ Editar Artículo</h3>
+              <h3 className="font-bold text-slate-900 text-base">✏️ Editar Producto</h3>
               <button
                 onClick={() => {
                   setEditingItem(null);
@@ -1249,7 +1354,6 @@ export default function AdminPage() {
                   <label className="block font-bold text-slate-700 mb-1 uppercase tracking-wider">
                     Categoría
                   </label>
-                  {/* DATALIST: Aplicado también en el menú de editar */}
                   <input
                     list="category-options-edit"
                     type="text"
@@ -1288,45 +1392,35 @@ export default function AdminPage() {
                   className="w-full p-2 border border-slate-200 rounded-xl outline-none focus:border-purple-600 file:mr-4 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-50 file:text-purple-700 cursor-pointer"
                 />
               </div>
-              <div>
-                <label className="block font-bold text-slate-700 mb-1 uppercase tracking-wider">
-                  Avisar si stock baja de:
-                </label>
-                <input
-                  type="number"
-                  required
-                  value={editingItem.min_stock_alert}
-                  onChange={(e) =>
-                    setEditingItem({
-                      ...editingItem,
-                      min_stock_alert: parseInt(e.target.value) || 5
-                    })
-                  }
-                  className="w-1/2 p-2.5 border border-slate-200 rounded-xl outline-none focus:border-purple-600"
-                />
-              </div>
               <div className="flex gap-4">
                 <div className="w-1/2">
                   <label className="block font-bold text-slate-700 mb-1 uppercase tracking-wider">
-                    Talla
+                    Avisar si stock baja de:
                   </label>
                   <input
-                    type="text"
+                    type="number"
                     required
-                    value={editingItem.size}
-                    onChange={(e) => setEditingItem({ ...editingItem, size: e.target.value })}
+                    value={
+                      Number.isNaN(editingItem.min_stock_alert) ? '' : editingItem.min_stock_alert
+                    }
+                    onChange={(e) =>
+                      setEditingItem({
+                        ...editingItem,
+                        min_stock_alert: parseInt(e.target.value, 10)
+                      })
+                    }
                     className="w-full p-2.5 border border-slate-200 rounded-xl outline-none focus:border-purple-600"
                   />
                 </div>
                 <div className="w-1/2">
                   <label className="block font-bold text-slate-700 mb-1 uppercase tracking-wider">
-                    Precio (€)
+                    Precio General (€)
                   </label>
                   <input
                     type="number"
                     step="0.50"
                     required
-                    value={editingItem.price}
+                    value={Number.isNaN(editingItem.price) ? '' : editingItem.price}
                     onChange={(e) =>
                       setEditingItem({ ...editingItem, price: parseFloat(e.target.value) })
                     }
