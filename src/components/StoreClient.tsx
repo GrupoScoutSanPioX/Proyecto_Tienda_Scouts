@@ -19,6 +19,7 @@ interface CartItem { variant_id: string; product_name: string; size: string; pri
 export default function StoreClient({ products }: { products: Product[] }) {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [buyerName, setBuyerName] = useState('');
+  const [email, setEmail] = useState(''); // NUEVO: Estado para el correo electrónico
   const [scoutUnit, setScoutUnit] = useState('Manada');
   const [status, setStatus] = useState<'idle' | 'loading' | 'success'>('idle');
   
@@ -59,7 +60,6 @@ export default function StoreClient({ products }: { products: Product[] }) {
 
   const addToCart = (product: Product) => {
     const sortedVars = sortVariants(product.product_variants);
-    // Busca la primera variante que tenga stock para usarla por defecto
     const firstAvailable = sortedVars.find(v => v.stock > 0) || sortedVars[0];
     const defaultVariantId = selectedVariants[product.id] || firstAvailable?.id;
     
@@ -101,7 +101,17 @@ export default function StoreClient({ products }: { products: Product[] }) {
   const handleCheckout = async () => {
     if (!buyerName.trim()) { alert('Por favor, introduce tu nombre para el pedido.'); return; }
     setStatus('loading');
-    const { data: orderData, error: orderError } = await supabase.from('orders').insert([{ buyer_name: buyerName, scout_unit: scoutUnit, total_amount: total }]).select('id').single();
+    
+    // NUEVO: Guardamos el email también en Supabase al crear el pedido
+    const { data: orderData, error: orderError } = await supabase.from('orders')
+      .insert([{ 
+        buyer_name: buyerName, 
+        scout_unit: scoutUnit, 
+        total_amount: total,
+        email: email.trim() || null // Si está vacío lo manda como null
+      }])
+      .select('id').single();
+      
     if (orderError || !orderData) { alert('Error: ' + orderError?.message); setStatus('idle'); return; }
 
     const itemsToInsert = cart.map(item => ({ order_id: orderData.id, variant_id: item.variant_id, quantity: item.quantity, unit_price: item.price }));
@@ -123,11 +133,29 @@ export default function StoreClient({ products }: { products: Product[] }) {
       }
     }
     
-    // AQUÍ ESTÁ EL CAMBIO PARA ENVIAR EL RESUMEN POR TELEGRAM
     const resumenPedido = cart.map(item => `🔹 ${item.quantity}x ${item.product_name} (Talla: ${item.size})`).join('\n');
     await avisarPorTelegram(`✅ Nuevo pedido de ${buyerName} (Rama: ${scoutUnit}): ${total.toFixed(2)} €\n\n📝 Lista de artículos:\n${resumenPedido}`);
     
-    setStatus('success'); setCart([]); router.refresh();
+    // NUEVO: Lanzamos el correo automático al Kraal con el resumen y alertas
+    try {
+      await fetch('/api/nueva-reserva', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          buyer_name: buyerName,
+          total_amount: total,
+          order_items: cart
+        })
+      });
+    } catch (error) {
+      console.log("No se pudo enviar el correo de aviso al grupo, pero el pedido se guardó.");
+    }
+    
+    setStatus('success'); 
+    setCart([]); 
+    setBuyerName('');
+    setEmail(''); // Limpiamos el email al terminar
+    router.refresh();
   };
 
   const scrollToCart = () => {
@@ -175,7 +203,6 @@ export default function StoreClient({ products }: { products: Product[] }) {
         {products.map((product) => {
           const sortedVariants = sortVariants(product.product_variants);
           
-          // Calculamos la primera variante disponible para ponerla por defecto
           const firstAvailable = sortedVariants.find(v => v.stock > 0) || sortedVariants[0];
           const currentVariantId = selectedVariants[product.id] || firstAvailable?.id;
           const selectedVariant = sortedVariants.find(v => v.id === currentVariantId) || firstAvailable;
@@ -296,6 +323,18 @@ export default function StoreClient({ products }: { products: Product[] }) {
               <div>
                 <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase tracking-wider">Tu Nombre *</label>
                 <input type="text" value={buyerName} onChange={(e) => setBuyerName(e.target.value)} className="w-full border border-slate-200 p-2.5 rounded-xl text-xs outline-none focus:border-purple-600 transition-colors bg-slate-50/50" placeholder="Ej: Baloo" />
+              </div>
+
+              {/* NUEVO CAMPO: CORREO ELECTRÓNICO */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase tracking-wider">Tu Correo (Opcional)</label>
+                <input 
+                  type="email" 
+                  value={email} 
+                  onChange={(e) => setEmail(e.target.value)} 
+                  className="w-full border border-slate-200 p-2.5 rounded-xl text-xs outline-none focus:border-purple-600 transition-colors bg-slate-50/50" 
+                  placeholder="Para avisos de reserva..." 
+                />
               </div>
               
               <div>
