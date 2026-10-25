@@ -19,7 +19,7 @@ interface CartItem { variant_id: string; product_name: string; size: string; pri
 export default function StoreClient({ products }: { products: Product[] }) {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [buyerName, setBuyerName] = useState('');
-  const [email, setEmail] = useState(''); // NUEVO: Estado para el correo electrónico
+  const [email, setEmail] = useState(''); 
   const [scoutUnit, setScoutUnit] = useState('Manada');
   const [status, setStatus] = useState<'idle' | 'loading' | 'success'>('idle');
   
@@ -27,6 +27,7 @@ export default function StoreClient({ products }: { products: Product[] }) {
   const [selectedVariants, setSelectedVariants] = useState<{ [productId: string]: string }>({});
   
   const [showToast, setShowToast] = useState(false);
+  const [showBackorderInfo, setShowBackorderInfo] = useState(false); // NUEVO: Estado para el popup de fábrica
   const cartRef = useRef<HTMLDivElement>(null);
 
   const router = useRouter();
@@ -60,16 +61,14 @@ export default function StoreClient({ products }: { products: Product[] }) {
 
   const addToCart = (product: Product) => {
     const sortedVars = sortVariants(product.product_variants);
-    const firstAvailable = sortedVars.find(v => v.stock > 0) || sortedVars[0];
-    const defaultVariantId = selectedVariants[product.id] || firstAvailable?.id;
+    const defaultVariantId = selectedVariants[product.id] || sortedVars[0]?.id;
     
     const variant = sortedVars.find(v => v.id === defaultVariantId);
-    if (!variant || variant.stock === 0) return;
+    if (!variant) return;
 
     setCart((prev) => {
       const existing = prev.find((item) => item.variant_id === variant.id);
       if (existing) {
-        if (existing.quantity >= variant.stock) return prev;
         return prev.map((item) => item.variant_id === variant.id ? { ...item, quantity: item.quantity + 1 } : item);
       }
       return [...prev, { variant_id: variant.id, product_name: product.name, size: variant.size, price: variant.price, quantity: 1, max_stock: variant.stock }];
@@ -85,7 +84,6 @@ export default function StoreClient({ products }: { products: Product[] }) {
         if (item.variant_id === variant_id) {
           const newQty = item.quantity + delta;
           if (newQty <= 0) return null;
-          if (newQty > item.max_stock) return item;
           return { ...item, quantity: newQty };
         }
         return item;
@@ -102,13 +100,17 @@ export default function StoreClient({ products }: { products: Product[] }) {
     if (!buyerName.trim()) { alert('Por favor, introduce tu nombre para el pedido.'); return; }
     setStatus('loading');
     
-    // NUEVO: Guardamos el email también en Supabase al crear el pedido
+    const fechaExpiracion = new Date();
+    fechaExpiracion.setDate(fechaExpiracion.getDate() + 15);
+
     const { data: orderData, error: orderError } = await supabase.from('orders')
       .insert([{ 
         buyer_name: buyerName, 
         scout_unit: scoutUnit, 
         total_amount: total,
-        email: email.trim() || null // Si está vacío lo manda como null
+        email: email.trim() || null,
+        expires_at: fechaExpiracion.toISOString(),
+        aviso_enviado: false
       }])
       .select('id').single();
       
@@ -127,7 +129,7 @@ export default function StoreClient({ products }: { products: Product[] }) {
         // @ts-ignore
         const limiteAlerta = variantInfo.products?.min_stock_alert ?? 5;
 
-        if (stockRestante <= limiteAlerta) {
+        if (stockRestante <= limiteAlerta && stockRestante >= 0) {
           await avisarPorTelegram(`🚨 Alerta Almacén\nEl artículo "${item.product_name}" (Talla: ${variantInfo.size}) se está agotando.\n⚠️ Quedan: ${stockRestante} uds.`);
         }
       }
@@ -136,7 +138,6 @@ export default function StoreClient({ products }: { products: Product[] }) {
     const resumenPedido = cart.map(item => `🔹 ${item.quantity}x ${item.product_name} (Talla: ${item.size})`).join('\n');
     await avisarPorTelegram(`✅ Nuevo pedido de ${buyerName} (Rama: ${scoutUnit}): ${total.toFixed(2)} €\n\n📝 Lista de artículos:\n${resumenPedido}`);
     
-    // NUEVO: Lanzamos el correo automático al Kraal con el resumen y alertas
     try {
       await fetch('/api/nueva-reserva', {
         method: 'POST',
@@ -154,7 +155,7 @@ export default function StoreClient({ products }: { products: Product[] }) {
     setStatus('success'); 
     setCart([]); 
     setBuyerName('');
-    setEmail(''); // Limpiamos el email al terminar
+    setEmail('');
     router.refresh();
   };
 
@@ -203,9 +204,8 @@ export default function StoreClient({ products }: { products: Product[] }) {
         {products.map((product) => {
           const sortedVariants = sortVariants(product.product_variants);
           
-          const firstAvailable = sortedVariants.find(v => v.stock > 0) || sortedVariants[0];
-          const currentVariantId = selectedVariants[product.id] || firstAvailable?.id;
-          const selectedVariant = sortedVariants.find(v => v.id === currentVariantId) || firstAvailable;
+          const currentVariantId = selectedVariants[product.id] || sortedVariants[0]?.id;
+          const selectedVariant = sortedVariants.find(v => v.id === currentVariantId) || sortedVariants[0];
           
           const hasMultipleVariants = sortedVariants.length > 1;
 
@@ -247,7 +247,7 @@ export default function StoreClient({ products }: { products: Product[] }) {
                             className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-purple-600 transition-colors cursor-pointer">
                             {sortedVariants.map((v) => (
                               <option key={v.id} value={v.id}>
-                                Talla {v.size} {v.stock === 0 ? '(Agotado)' : `(${v.stock} disp.)`}
+                                Talla {v.size} {v.stock <= 0 ? '(Bajo pedido)' : `(${v.stock} disp.)`}
                               </option>
                             ))}
                           </select>
@@ -256,7 +256,7 @@ export default function StoreClient({ products }: { products: Product[] }) {
                         <>
                           <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Talla / Modelo</label>
                           <div className="text-xs font-bold text-slate-800 py-2">
-                            {selectedVariant?.size} <span className="font-normal text-slate-400">({selectedVariant?.stock} disp.)</span>
+                            {selectedVariant?.size} <span className="font-normal text-slate-400">{selectedVariant?.stock <= 0 ? '(Bajo pedido)' : `(${selectedVariant?.stock} disp.)`}</span>
                           </div>
                         </>
                       )}
@@ -270,9 +270,12 @@ export default function StoreClient({ products }: { products: Product[] }) {
 
                   <button 
                     onClick={() => addToCart(product)} 
-                    disabled={selectedVariant?.stock === 0} 
-                    className="w-full bg-slate-900 hover:bg-slate-800 disabled:bg-slate-100 disabled:text-slate-300 text-white font-semibold text-xs py-2.5 px-4 rounded-xl transition-colors shadow-xs">
-                    {selectedVariant?.stock === 0 ? 'Agotado' : 'Añadir a la cesta'}
+                    className={`w-full font-semibold text-xs py-2.5 px-4 rounded-xl transition-colors shadow-xs ${
+                      selectedVariant?.stock <= 0 
+                        ? 'bg-amber-500 hover:bg-amber-600 text-white' 
+                        : 'bg-slate-900 hover:bg-slate-800 text-white'
+                    }`}>
+                    {selectedVariant?.stock <= 0 ? 'Encargar (Bajo pedido)' : 'Añadir a la cesta'}
                   </button>
                 </div>
 
@@ -294,24 +297,45 @@ export default function StoreClient({ products }: { products: Product[] }) {
         ) : (
           <>
             <ul className="space-y-3 mb-5 max-h-60 overflow-y-auto pr-1">
-              {cart.map((item) => (
-                <li key={item.variant_id} className="text-xs flex justify-between items-center bg-slate-50/50 p-2.5 rounded-xl border border-slate-100">
-                    <div className="flex flex-col flex-1 mr-2">
-                        <span className="text-slate-800 font-medium">
-                          {item.product_name} <span className="text-purple-700 font-bold">({item.size})</span>
-                        </span>
-                        <div className="flex items-center gap-2 mt-2">
-                          <div className="flex items-center border border-slate-200 bg-white rounded-lg overflow-hidden">
-                            <button onClick={() => updateQuantity(item.variant_id, -1)} className="px-2 py-0.5 text-slate-600 hover:bg-slate-100 font-bold">-</button>
-                            <span className="px-2 py-0.5 font-bold text-slate-800">{item.quantity}</span>
-                            <button onClick={() => updateQuantity(item.variant_id, 1)} className="px-2 py-0.5 text-slate-600 hover:bg-slate-100 font-bold">+</button>
+              {cart.map((item) => {
+                const isBackorder = item.quantity > item.max_stock;
+                
+                return (
+                  <li key={item.variant_id} className="text-xs flex justify-between items-start bg-slate-50/50 p-2.5 rounded-xl border border-slate-100">
+                      <div className="flex flex-col flex-1 mr-2">
+                          <span className="text-slate-800 font-medium">
+                            {item.product_name} <span className="text-purple-700 font-bold">({item.size})</span>
+                          </span>
+                          
+                          {/* ETIQUETA DE FÁBRICA CON BOTÓN DE INFORMACIÓN */}
+                          {isBackorder && (
+                            <div className="flex items-center gap-1 mt-1">
+                              <span className="text-[10px] text-amber-600 font-bold bg-amber-100/50 px-2 py-0.5 rounded border border-amber-200 w-fit">
+                                ⚠️ Se pedirá a fábrica
+                              </span>
+                              <button 
+                                onClick={() => setShowBackorderInfo(true)}
+                                className="w-4 h-4 rounded-full bg-slate-200 hover:bg-slate-300 text-slate-600 flex items-center justify-center font-bold text-[10px] transition-colors"
+                                title="¿Qué significa esto?"
+                              >
+                                ?
+                              </button>
+                            </div>
+                          )}
+
+                          <div className="flex items-center gap-2 mt-2">
+                            <div className="flex items-center border border-slate-200 bg-white rounded-lg overflow-hidden">
+                              <button onClick={() => updateQuantity(item.variant_id, -1)} className="px-2 py-0.5 text-slate-600 hover:bg-slate-100 font-bold">-</button>
+                              <span className="px-2 py-0.5 font-bold text-slate-800">{item.quantity}</span>
+                              <button onClick={() => updateQuantity(item.variant_id, 1)} className="px-2 py-0.5 text-slate-600 hover:bg-slate-100 font-bold">+</button>
+                            </div>
+                            <button onClick={() => removeFromCart(item.variant_id)} className="text-[10px] font-semibold text-red-500 hover:text-red-700 transition-colors">Quitar</button>
                           </div>
-                          <button onClick={() => removeFromCart(item.variant_id)} className="text-[10px] font-semibold text-red-500 hover:text-red-700 transition-colors">Quitar</button>
-                        </div>
-                    </div>
-                    <span className="font-bold text-slate-900 shrink-0">{(item.price * item.quantity).toFixed(2)} €</span>
-                </li>
-              ))}
+                      </div>
+                      <span className="font-bold text-slate-900 shrink-0 mt-1">{(item.price * item.quantity).toFixed(2)} €</span>
+                  </li>
+                );
+              })}
             </ul>
             
             <div className="flex justify-between items-center mb-5 pt-3 border-t border-slate-100">
@@ -325,7 +349,6 @@ export default function StoreClient({ products }: { products: Product[] }) {
                 <input type="text" value={buyerName} onChange={(e) => setBuyerName(e.target.value)} className="w-full border border-slate-200 p-2.5 rounded-xl text-xs outline-none focus:border-purple-600 transition-colors bg-slate-50/50" placeholder="Ej: Baloo" />
               </div>
 
-              {/* NUEVO CAMPO: CORREO ELECTRÓNICO */}
               <div>
                 <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase tracking-wider">Tu Correo (Opcional)</label>
                 <input 
@@ -359,7 +382,37 @@ export default function StoreClient({ products }: { products: Product[] }) {
         )}
       </div>
 
-      {/* VENTANA FLOTANTE DE DESCRIPCIÓN */}
+      {/* POPUP DE INFORMACIÓN SOBRE PEDIDOS A FÁBRICA */}
+      {showBackorderInfo && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden border border-slate-100 scale-100 animate-in zoom-in-95 duration-200">
+            <div className="px-6 py-4 border-b border-amber-100 bg-amber-50/50 flex justify-between items-center">
+              <h3 className="font-bold text-amber-900 text-base flex items-center gap-2">
+                <span>📦</span> Bajo Pedido
+              </h3>
+              <button onClick={() => setShowBackorderInfo(false)} className="w-8 h-8 rounded-full bg-amber-200/50 hover:bg-amber-200 text-amber-800 font-bold flex items-center justify-center transition-colors">&times;</button>
+            </div>
+            <div className="p-6">
+              <p className="text-sm text-slate-700 leading-relaxed">
+                El artículo que has seleccionado no se encuentra actualmente en el almacén del local.
+              </p>
+              <p className="text-sm text-slate-700 leading-relaxed mt-3">
+                Puedes <strong>completar la reserva con normalidad</strong>. Nosotros apuntaremos tu prenda en la lista y la solicitaremos a fábrica en el próximo encargo del grupo.
+              </p>
+              <div className="mt-4 p-3 bg-slate-50 border border-slate-100 rounded-xl text-xs text-slate-500">
+                <span className="font-semibold text-slate-700">Nota:</span> Ten en cuenta que la entrega de este artículo podría tardar algunas semanas en función de los plazos de nuestro proveedor.
+              </div>
+            </div>
+            <div className="px-6 py-4 bg-slate-50/80 border-t border-slate-100 flex justify-end">
+              <button onClick={() => setShowBackorderInfo(false)} className="bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors">
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* VENTANA FLOTANTE DE DESCRIPCIÓN DE PRODUCTOS */}
       {activeDescription && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100">
