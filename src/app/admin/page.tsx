@@ -37,6 +37,7 @@ interface Order {
   status: string;
   created_at: string;
   expires_at?: string;
+  email?: string;
   order_items?: OrderItem[];
 }
 
@@ -97,9 +98,14 @@ export default function AdminPage() {
 
   const totalCobrado = orders
     .filter((o) => o.status === 'Pagado' || o.status === 'Entregado')
-    .reduce((sum, order) => sum + order.total_amount, 0);
+    .reduce((sum, order) => sum + Number(order.total_amount), 0);
 
   const cajaTotal = cajaInicial + totalCobrado;
+
+  // NUEVO: Cálculo del dinero esperado de pedidos pendientes y reservados
+  const dineroEsperado = orders
+    .filter((o) => o.status === 'Pendiente' || o.status === 'Reservado')
+    .reduce((sum, order) => sum + Number(order.total_amount), 0);
 
   const predefinedCategories = Array.from(
     new Set(['Ropa', 'Insignias', 'Libros', 'Material', 'Otros', ...products.map((p) => p.category)])
@@ -112,6 +118,13 @@ export default function AdminPage() {
   async function fetchData() {
     setLoading(true);
     try {
+      // Auto-limpieza silenciosa y envío de recordatorios al abrir el panel
+      try {
+        await fetch('/api/cron');
+      } catch (e) {
+        console.log('El robot de limpieza no respondió', e);
+      }
+
       let caja = 0;
       let productosPlano: any[] = [];
       let variantesPlano: any[] = [];
@@ -185,7 +198,14 @@ export default function AdminPage() {
         return { ...pedido, order_items };
       });
 
-      setOrders(pedidosCompletos as Order[]);
+      // Ordenación inteligente: los Entregados se hunden al fondo
+      const pedidosOrdenados = pedidosCompletos.sort((a, b) => {
+        if (a.status === 'Entregado' && b.status !== 'Entregado') return 1;
+        if (a.status !== 'Entregado' && b.status === 'Entregado') return -1;
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      });
+
+      setOrders(pedidosOrdenados as Order[]);
     } catch (e) {
       console.error('Error crítico cargando base de datos:', e);
     }
@@ -281,7 +301,11 @@ export default function AdminPage() {
     setOrders((prev) =>
       prev.map((o) => (o.id === orderId ? { ...o, expires_at: newExpiresAt } : o))
     );
-    await supabase.from('orders').update({ expires_at: newExpiresAt }).eq('id', orderId);
+    // También reseteamos aviso_enviado a false por si ya le había avisado antes de ampliarle el plazo
+    await supabase
+      .from('orders')
+      .update({ expires_at: newExpiresAt, aviso_enviado: false })
+      .eq('id', orderId);
     alert(`¡Plazo ampliado! Ahora caduca el ${baseDate.toLocaleDateString()}`);
   };
 
@@ -329,7 +353,7 @@ export default function AdminPage() {
   };
 
   const handleStockChange = async (variantId: string, currentStock: number, increment: number) => {
-    const newStock = Math.max(0, currentStock + increment);
+    const newStock = currentStock + increment;
     if (newStock === currentStock) return;
     setProducts((prev) =>
       prev.map((p) => ({
@@ -355,7 +379,7 @@ export default function AdminPage() {
     const amount = parseInt(input, 10);
     if (isNaN(amount) || amount <= 0) return;
     const increment = type === 'add' ? amount : -amount;
-    const newStock = Math.max(0, currentStock + increment);
+    const newStock = currentStock + increment;
     if (newStock === currentStock) return;
     setProducts((prev) =>
       prev.map((p) => ({
@@ -696,38 +720,60 @@ export default function AdminPage() {
             <>
               {activeTab === 'orders' && (
                 <div>
-                  <div className="p-5 border-b border-slate-100 bg-slate-50 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                    <div className="bg-white border border-emerald-200 px-4 py-3 rounded-xl shadow-sm flex items-center gap-4 w-full md:w-auto">
-                      <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center text-lg">
-                        💶
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                          Dinero Total en Caja
-                        </p>
-                        <p className="text-xl font-black text-emerald-600 leading-none mt-0.5">
-                          {cajaTotal.toFixed(2)} €
-                        </p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <p className="text-[10px] font-semibold text-slate-400">
-                            Fondo ({cajaInicial.toFixed(2)}€) + Ventas ({totalCobrado.toFixed(2)}€)
+                  <div className="p-5 border-b border-slate-100 bg-slate-50 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 w-full xl:w-auto">
+                      {/* WIDGET 1: DINERO EN CAJA */}
+                      <div className="bg-white border border-emerald-200 px-4 py-3 rounded-xl shadow-sm flex items-center gap-4 flex-1 sm:flex-initial">
+                        <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center text-lg shrink-0">
+                          💶
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                            Dinero Total en Caja
                           </p>
-                          <button
-                            onClick={handleEditCaja}
-                            className="bg-slate-100 hover:bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded text-[9px] uppercase font-bold transition-colors"
-                          >
-                            ✏️ Ajustar fondo
-                          </button>
-                          <button
-                            onClick={handleRestarCaja}
-                            className="bg-red-50 hover:bg-red-100 text-red-600 px-1.5 py-0.5 rounded text-[9px] uppercase font-bold transition-colors"
-                          >
-                            ➖ Extraer dinero
-                          </button>
+                          <p className="text-xl font-black text-emerald-600 leading-none mt-0.5">
+                            {cajaTotal.toFixed(2)} €
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2 mt-1">
+                            <p className="text-[10px] font-semibold text-slate-400">
+                              Fondo ({cajaInicial.toFixed(2)}€) + Ventas ({totalCobrado.toFixed(2)}€)
+                            </p>
+                            <button
+                              onClick={handleEditCaja}
+                              className="bg-slate-100 hover:bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded text-[9px] uppercase font-bold transition-colors"
+                            >
+                              ✏️ Ajustar fondo
+                            </button>
+                            <button
+                              onClick={handleRestarCaja}
+                              className="bg-red-50 hover:bg-red-100 text-red-600 px-1.5 py-0.5 rounded text-[9px] uppercase font-bold transition-colors"
+                            >
+                              ➖ Extraer dinero
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* WIDGET 2: DINERO ESPERADO (NUEVO) */}
+                      <div className="bg-white border border-amber-200 px-4 py-3 rounded-xl shadow-sm flex items-center gap-4 flex-1 sm:flex-initial">
+                        <div className="w-10 h-10 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center text-lg shrink-0">
+                          ⏳
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
+                            Dinero Esperado
+                          </p>
+                          <p className="text-xl font-black text-amber-600 leading-none mt-0.5">
+                            {dineroEsperado.toFixed(2)} €
+                          </p>
+                          <p className="text-[10px] font-semibold text-amber-700/70 mt-1">
+                            De pedidos pendientes y reservados
+                          </p>
                         </div>
                       </div>
                     </div>
-                    <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto">
+
+                    <div className="flex flex-col sm:flex-row items-center gap-3 w-full xl:w-auto">
                       {selectedOrders.length > 0 && (
                         <button
                           onClick={() => handleDeleteOrders(selectedOrders)}
@@ -787,7 +833,7 @@ export default function AdminPage() {
                                 key={order.id}
                                 className={`hover:bg-slate-50/60 transition-colors group ${
                                   selectedOrders.includes(order.id) ? 'bg-purple-50/30' : ''
-                                }`}
+                                } ${order.status === 'Entregado' ? 'opacity-60 bg-slate-50/40' : ''}`}
                               >
                                 <td className="p-4 text-center align-top pt-5">
                                   <input
@@ -807,6 +853,11 @@ export default function AdminPage() {
                                       {order.scout_unit || 'General'}
                                     </span>
                                   </div>
+                                  {order.email && (
+                                    <p className="text-[11px] text-slate-400 mb-1.5">
+                                      ✉️ {order.email}
+                                    </p>
+                                  )}
                                   {order.order_items && order.order_items.length > 0 ? (
                                     <ul className="space-y-1.5 mt-2">
                                       {order.order_items.map((item, idx) => (
@@ -831,11 +882,15 @@ export default function AdminPage() {
                                   )}
                                 </td>
                                 <td className="p-4 font-extrabold text-right text-slate-900 text-sm align-top pt-5">
-                                  {order.total_amount.toFixed(2)} €
+                                  {Number(order.total_amount).toFixed(2)} €
                                 </td>
 
                                 <td className="p-4 text-center align-top pt-4">
-                                  {isPending ? (
+                                  {order.status === 'Reservado' && !order.expires_at ? (
+                                    <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-purple-100 text-purple-700 inline-block">
+                                      📦 Bajo pedido
+                                    </span>
+                                  ) : isPending ? (
                                     <div className="flex flex-col items-center gap-1.5">
                                       <span
                                         className={`text-[10px] font-bold px-2 py-1 rounded-full ${
@@ -1225,6 +1280,7 @@ export default function AdminPage() {
                                 <div className="flex flex-col gap-2">
                                   {product.product_variants.map((variant) => {
                                     const isLowStock = variant.stock <= minAlert;
+                                    const isNegative = variant.stock < 0;
 
                                     return (
                                       <div
@@ -1236,11 +1292,15 @@ export default function AdminPage() {
                                           <span className="bg-slate-100 text-slate-800 font-black px-2.5 py-1 rounded-lg min-w-[48px] text-center text-xs">
                                             {variant.size}
                                           </span>
-                                          {isLowStock && (
+                                          {isNegative ? (
+                                            <span className="text-[10px] font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">
+                                              📦 Pedir {Math.abs(variant.stock)} a fábrica
+                                            </span>
+                                          ) : isLowStock ? (
                                             <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full">
                                               ⚠️ Stock bajo
                                             </span>
-                                          )}
+                                          ) : null}
                                         </div>
 
                                         {/* Controles de Stock y Borrado de Talla */}
@@ -1263,7 +1323,9 @@ export default function AdminPage() {
                                           </button>
                                           <span
                                             className={`min-w-[28px] text-center text-sm ${
-                                              isLowStock
+                                              isNegative
+                                                ? 'text-purple-700 font-black'
+                                                : isLowStock
                                                 ? 'text-red-600 font-black'
                                                 : 'text-slate-800 font-bold'
                                             }`}
