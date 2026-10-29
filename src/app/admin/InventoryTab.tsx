@@ -8,6 +8,7 @@ interface Variant {
   size: string;
   price: number;
   stock: number;
+  min_stock_alert: number;
 }
 
 interface Product {
@@ -16,38 +17,18 @@ interface Product {
   description: string;
   image_url: string;
   category: string;
-  min_stock_alert: number;
+  store_order: number;
   product_variants: Variant[];
 }
 
-interface TopProduct {
-  name: string;
-  totalSold: number;
-}
-
-interface StockAnalysisItem {
-  productId: string;
-  variantId: string;
-  productName: string;
-  category: string;
-  size: string;
-  currentStock: number;
-  totalSold: number;
-  suggestedMinStock: number;
-}
-
 export default function InventoryTab({
-  products = [], // Paracaídas de seguridad
+  products = [],
   setProducts,
-  topProducts = [], // Paracaídas de seguridad
   fetchData,
-  stockAnalysis = [], // Paracaídas de seguridad
 }: {
   products: Product[];
   setProducts: React.Dispatch<React.SetStateAction<Product[]>>;
-  topProducts: TopProduct[];
   fetchData: () => Promise<void>;
-  stockAnalysis: StockAnalysisItem[];
 }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
@@ -60,10 +41,11 @@ export default function InventoryTab({
     description: '',
     image_url: '',
     category: 'Ropa',
-    min_stock_alert: 5,
+    store_order: 0,
     size: 'M',
     price: 15,
     stock: 10,
+    min_stock_alert: 5,
   });
 
   const [editingItem, setEditingItem] = useState<{
@@ -73,7 +55,7 @@ export default function InventoryTab({
     category: string;
     description: string;
     image_url: string;
-    min_stock_alert: number;
+    store_order: number;
     size: string;
     price: number;
   } | null>(null);
@@ -102,38 +84,10 @@ export default function InventoryTab({
           found.product_variants.length > 0 ? found.product_variants[0].price : 15;
         setNewProduct((prev) => ({
           ...prev,
-          min_stock_alert: found.min_stock_alert ?? 5,
           price: defaultPrice,
+          store_order: found.store_order || 0,
         }));
       }
-    }
-  };
-
-  // Botón Mágico para auto-rellenar el inventario al mínimo sugerido
-  const handleAutoRestock = async () => {
-    if (
-      !window.confirm(
-        "¿Seguro que quieres Auto-Rellenar el inventario?\n\nEsto ajustará el stock real de TODAS las prendas para que coincida con el 'Mínimo Sugerido' calculado por la tienda (ideal para principio de ronda cuando recibes el pedido de fábrica)."
-      )
-    )
-      return;
-
-    let updatedCount = 0;
-    for (const item of stockAnalysis) {
-      if (item.currentStock < item.suggestedMinStock) {
-        await supabase
-          .from('product_variants')
-          .update({ stock: item.suggestedMinStock })
-          .eq('id', item.variantId);
-        updatedCount++;
-      }
-    }
-
-    if (updatedCount > 0) {
-      alert(`¡Stock actualizado con éxito! Se han rellenado ${updatedCount} tallas.`);
-      fetchData();
-    } else {
-      alert('El stock actual ya es igual o superior a todos los mínimos sugeridos. ¡No se ha tocado nada!');
     }
   };
 
@@ -152,6 +106,21 @@ export default function InventoryTab({
       }))
     );
     await supabase.from('product_variants').update({ stock: newStock }).eq('id', variantId);
+  };
+
+  const handleMinAlertChangeLocal = (variantId: string, value: number) => {
+    setProducts((prev) =>
+      prev.map((p) => ({
+        ...p,
+        product_variants: p.product_variants.map((v) =>
+          v.id === variantId ? { ...v, min_stock_alert: value } : v
+        ),
+      }))
+    );
+  };
+
+  const updateMinAlertInDB = async (variantId: string, value: number) => {
+    await supabase.from('product_variants').update({ min_stock_alert: value }).eq('id', variantId);
   };
 
   const handleBulkChange = async (
@@ -182,7 +151,7 @@ export default function InventoryTab({
   };
 
   const handleDeleteVariant = async (variantId: string, productId: string) => {
-    if (!window.confirm('¿Seguro que quieres eliminar esta talla/producto?')) return;
+    if (!window.confirm('¿Seguro que quieres eliminar esta talla?')) return;
     const { error } = await supabase.from('product_variants').delete().eq('id', variantId);
     if (error) {
       alert('⚠️ No puedes borrar este artículo porque hay pedidos asociados. Pon el stock a 0.');
@@ -240,7 +209,7 @@ export default function InventoryTab({
             category: newProduct.category,
             description: newProduct.description,
             image_url: newProduct.image_url,
-            min_stock_alert: newProduct.min_stock_alert,
+            store_order: newProduct.store_order,
           },
         ])
         .select('id')
@@ -253,7 +222,7 @@ export default function InventoryTab({
     } else {
       await supabase
         .from('products')
-        .update({ min_stock_alert: newProduct.min_stock_alert })
+        .update({ store_order: newProduct.store_order })
         .eq('id', productIdToUse);
     }
 
@@ -263,6 +232,7 @@ export default function InventoryTab({
         size: newProduct.size,
         price: newProduct.price,
         stock: newProduct.stock,
+        min_stock_alert: newProduct.min_stock_alert,
       },
     ]);
 
@@ -276,10 +246,11 @@ export default function InventoryTab({
         description: '',
         image_url: '',
         category: 'Ropa',
-        min_stock_alert: 5,
+        store_order: 0,
         size: 'M',
         price: 15,
         stock: 10,
+        min_stock_alert: 5,
       });
       setSelectedProductId('new');
       setProductSearchInput('');
@@ -297,14 +268,9 @@ export default function InventoryTab({
         category: editingItem.category,
         description: editingItem.description,
         image_url: editingItem.image_url,
-        min_stock_alert: editingItem.min_stock_alert,
+        store_order: editingItem.store_order,
       })
       .eq('id', editingItem.productId);
-
-    await supabase
-      .from('product_variants')
-      .update({ price: editingItem.price })
-      .eq('product_id', editingItem.productId);
 
     await supabase
       .from('product_variants')
@@ -325,7 +291,7 @@ export default function InventoryTab({
       category: product.category,
       description: product.description || '',
       image_url: product.image_url || '',
-      min_stock_alert: product.min_stock_alert ?? 5,
+      store_order: product.store_order || 0,
       size: variant.size,
       price: variant.price,
     });
@@ -333,34 +299,7 @@ export default function InventoryTab({
 
   return (
     <div>
-      {/* RANKING TOP VENTAS */}
-      {topProducts.length > 0 && (
-        <div className="p-5 bg-purple-50/60 border-b border-purple-100">
-          <h3 className="text-xs font-extrabold text-purple-900 uppercase tracking-wider mb-3">
-            🔥 Ranking Top Ventas (Artículos y Tallas más solicitadas)
-          </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
-            {topProducts.map((p, idx) => (
-              <div
-                key={p.name}
-                className="bg-white p-3 rounded-xl border border-purple-200/60 shadow-2xs flex items-center gap-3"
-              >
-                <span className="w-7 h-7 rounded-full bg-purple-700 text-white font-black text-xs flex items-center justify-center shrink-0">
-                  #{idx + 1}
-                </span>
-                <div className="overflow-hidden">
-                  <p className="font-bold text-slate-900 text-xs truncate">{p.name}</p>
-                  <p className="text-[11px] font-semibold text-purple-700">
-                    {p.totalSold} unidades vendidas
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* CABECERA BUSCADOR Y AUTO-RELLENAR */}
+      {/* CABECERA BUSCADOR */}
       <div className="p-5 border-b border-slate-100 bg-white flex flex-col sm:flex-row justify-between items-center gap-4">
         <div className="w-full sm:w-72 relative">
           <span className="absolute left-3 top-2.5 text-slate-400">🔍</span>
@@ -373,13 +312,6 @@ export default function InventoryTab({
           />
         </div>
         <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap justify-end">
-          <button
-            onClick={handleAutoRestock}
-            className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-sm"
-            title="Sube el stock físico al mínimo sugerido de forma automática"
-          >
-            ✨ Auto-Rellenar Inicio de Ronda
-          </button>
           <button
             onClick={() => setShowAddForm(!showAddForm)}
             className="w-full sm:w-auto bg-slate-900 hover:bg-slate-800 text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-colors shadow-sm"
@@ -416,11 +348,11 @@ export default function InventoryTab({
 
             <div>
               <label className="block font-bold text-slate-600 mb-1 uppercase tracking-wider text-[11px]">
-                🔍 Buscar producto en el desplegable
+                🔍 Buscar en la lista
               </label>
               <input
                 type="text"
-                placeholder="Escribe aquí (ej: Polo) para filtrar la lista..."
+                placeholder="Escribe para filtrar el desplegable..."
                 value={productSearchInput}
                 onChange={(e) => setProductSearchInput(e.target.value)}
                 className="w-full p-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:border-purple-600"
@@ -430,10 +362,10 @@ export default function InventoryTab({
 
           {selectedProductId === 'new' && (
             <div className="space-y-4 pt-2">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase">
-                    Nombre del Producto
+                    Nombre
                   </label>
                   <input
                     type="text"
@@ -441,7 +373,6 @@ export default function InventoryTab({
                     value={newProduct.name}
                     onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })}
                     className="w-full p-2.5 bg-white border border-slate-200 rounded-xl"
-                    placeholder="Ej: Polo de lobato"
                   />
                 </div>
                 <div>
@@ -452,10 +383,37 @@ export default function InventoryTab({
                     type="text"
                     required
                     value={newProduct.category}
-                    onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })}
+                    onChange={(e) =>
+                      setNewProduct({ ...newProduct, category: e.target.value })
+                    }
                     className="w-full p-2.5 bg-white border border-slate-200 rounded-xl"
-                    placeholder="Ej: Ropa, Cuadernos..."
                   />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase flex items-center gap-1">
+                    Orden en tienda (Nº)
+                    <span 
+                      className="cursor-help text-purple-600 font-bold" 
+                      title="Sirve para ordenar los productos en la página principal de la tienda. Cuanto más pequeño sea el número (ej: 1, 2, 3), más arriba aparecerá colocado el producto."
+                    >
+                      ❓
+                    </span>
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    value={newProduct.store_order}
+                    onChange={(e) =>
+                      setNewProduct({
+                        ...newProduct,
+                        store_order: parseInt(e.target.value, 10) || 0,
+                      })
+                    }
+                    className="w-full p-2.5 bg-white border border-slate-200 rounded-xl"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    💡 Menor número = más arriba en la tienda.
+                  </p>
                 </div>
               </div>
               <div>
@@ -474,7 +432,7 @@ export default function InventoryTab({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase">
-                    Subir Foto desde tu dispositivo
+                    Subir Foto (Dispositivo)
                   </label>
                   <input
                     type="file"
@@ -482,15 +440,10 @@ export default function InventoryTab({
                     onChange={(e) => handleImageUpload(e, 'new')}
                     className="w-full p-2 bg-white border border-slate-200 rounded-xl text-xs"
                   />
-                  {uploadingImage && (
-                    <p className="text-purple-700 font-bold mt-1">
-                      Subiendo imagen a Supabase...
-                    </p>
-                  )}
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase">
-                    O pegar URL de la Imagen
+                    Pegar URL Imagen
                   </label>
                   <input
                     type="url"
@@ -498,7 +451,6 @@ export default function InventoryTab({
                     onChange={(e) =>
                       setNewProduct({ ...newProduct, image_url: e.target.value })
                     }
-                    placeholder="https://..."
                     className="w-full p-2.5 bg-white border border-slate-200 rounded-xl"
                   />
                 </div>
@@ -517,7 +469,6 @@ export default function InventoryTab({
                 value={newProduct.size}
                 onChange={(e) => setNewProduct({ ...newProduct, size: e.target.value })}
                 className="w-full p-2.5 bg-white border border-slate-200 rounded-xl"
-                placeholder="Ej: M, No aplica..."
               />
             </div>
             <div>
@@ -537,7 +488,7 @@ export default function InventoryTab({
             </div>
             <div>
               <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase">
-                Stock Inicial
+                Stock Físico
               </label>
               <input
                 type="number"
@@ -551,7 +502,7 @@ export default function InventoryTab({
             </div>
             <div>
               <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase">
-                Avisar en Telegram si baja de:
+                Alerta Mínimo
               </label>
               <input
                 type="number"
@@ -560,7 +511,7 @@ export default function InventoryTab({
                 onChange={(e) =>
                   setNewProduct({
                     ...newProduct,
-                    min_stock_alert: parseInt(e.target.value, 10) || 5,
+                    min_stock_alert: parseInt(e.target.value, 10) || 0,
                   })
                 }
                 className="w-full p-2.5 bg-white border border-slate-200 rounded-xl"
@@ -571,7 +522,7 @@ export default function InventoryTab({
             <button
               type="submit"
               disabled={uploadingImage}
-              className="bg-purple-700 hover:bg-purple-800 text-white font-bold px-6 py-2.5 rounded-xl transition-colors shadow-xs"
+              className="bg-purple-700 hover:bg-purple-800 text-white font-bold px-6 py-2.5 rounded-xl transition-colors"
             >
               Guardar en Inventario
             </button>
@@ -598,11 +549,10 @@ export default function InventoryTab({
                     {product.image_url ? (
                       <img
                         src={product.image_url}
-                        alt={product.name}
                         className="w-12 h-12 object-contain rounded-lg border border-slate-200 bg-white"
                       />
                     ) : (
-                      <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center text-xl border border-slate-200">
+                      <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center text-xl border">
                         ⛺
                       </div>
                     )}
@@ -610,17 +560,18 @@ export default function InventoryTab({
                       <h4 className="font-black text-slate-900 text-sm leading-tight">
                         {product.name}
                       </h4>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Orden tienda: #{product.store_order || 0}</p>
                       <button
                         onClick={() => openEditProduct(product)}
-                        className="text-[10px] font-bold text-purple-600 hover:text-purple-800 flex items-center gap-1 mt-1.5 transition-colors"
+                        className="text-[10px] font-bold text-purple-600 hover:text-purple-800 mt-1"
                       >
-                        ✏️ Editar producto / precio
+                        ✏️ Editar producto
                       </button>
                     </div>
                   </div>
                 </td>
                 <td className="p-4 align-top">
-                  <span className="px-2.5 py-1 bg-purple-50 text-purple-700 rounded-lg font-bold text-[10px] border border-purple-100/50">
+                  <span className="px-2.5 py-1 bg-purple-50 text-purple-700 rounded-lg font-bold text-[10px] border">
                     {product.category}
                   </span>
                 </td>
@@ -633,7 +584,7 @@ export default function InventoryTab({
                 <td className="p-4">
                   <div className="flex flex-col gap-2">
                     {product.product_variants.map((variant) => {
-                      const isLowStock = variant.stock <= (product.min_stock_alert ?? 5);
+                      const isLowStock = variant.stock <= (variant.min_stock_alert || 0);
                       return (
                         <div
                           key={variant.id}
@@ -643,13 +594,35 @@ export default function InventoryTab({
                             <span className="font-black text-slate-800 text-xs min-w-[3.5rem]">
                               {variant.size}
                             </span>
+                            {/* EDICIÓN DIRECTA DEL MÍNIMO POR TALLA */}
+                            <div
+                              className="flex items-center gap-1 bg-slate-50 px-2 py-0.5 rounded-lg border border-slate-200"
+                              title="Alerta de Stock Mínimo para esta talla"
+                            >
+                              <span className="text-[10px] text-slate-500 font-bold">Mínimo:</span>
+                              <input
+                                type="number"
+                                min="0"
+                                value={variant.min_stock_alert ?? 0}
+                                onChange={(e) =>
+                                  handleMinAlertChangeLocal(
+                                    variant.id,
+                                    parseInt(e.target.value, 10) || 0
+                                  )
+                                }
+                                onBlur={() =>
+                                  updateMinAlertInDB(variant.id, variant.min_stock_alert)
+                                }
+                                className="w-10 bg-transparent text-center font-bold text-xs outline-none text-purple-700"
+                              />
+                            </div>
                             {variant.stock < 0 && (
-                              <span className="bg-purple-100 text-purple-800 text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1">
-                                📦 Pedir {Math.abs(variant.stock)} a fábrica
+                              <span className="bg-purple-100 text-purple-800 text-[10px] font-bold px-2 py-0.5 rounded">
+                                📦 Pedir {Math.abs(variant.stock)}
                               </span>
                             )}
                             {variant.stock >= 0 && isLowStock && (
-                              <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1">
+                              <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded">
                                 ⚠️ Stock bajo
                               </span>
                             )}
@@ -659,13 +632,13 @@ export default function InventoryTab({
                               onClick={() =>
                                 handleBulkChange(variant.id, variant.stock, 'subtract')
                               }
-                              className="text-red-600 font-bold text-[11px] px-2 hover:bg-red-50 rounded py-1 transition-colors"
+                              className="text-red-600 font-bold text-[11px] px-2 hover:bg-red-50 rounded py-1"
                             >
                               Quitar
                             </button>
                             <button
                               onClick={() => handleStockChange(variant.id, variant.stock, -1)}
-                              className="w-6 h-6 bg-slate-100 hover:bg-slate-200 rounded-md flex items-center justify-center font-bold text-slate-600 transition-colors"
+                              className="w-6 h-6 bg-slate-100 hover:bg-slate-200 rounded-md font-bold text-slate-600"
                             >
                               -
                             </button>
@@ -682,7 +655,7 @@ export default function InventoryTab({
                             </span>
                             <button
                               onClick={() => handleStockChange(variant.id, variant.stock, 1)}
-                              className="w-6 h-6 bg-slate-100 hover:bg-slate-200 rounded-md flex items-center justify-center font-bold text-slate-600 transition-colors"
+                              className="w-6 h-6 bg-slate-100 hover:bg-slate-200 rounded-md font-bold text-slate-600"
                             >
                               +
                             </button>
@@ -690,14 +663,13 @@ export default function InventoryTab({
                               onClick={() =>
                                 handleBulkChange(variant.id, variant.stock, 'add')
                               }
-                              className="text-emerald-600 font-bold text-[11px] px-2 hover:bg-emerald-50 rounded py-1 transition-colors"
+                              className="text-emerald-600 font-bold text-[11px] px-2 hover:bg-emerald-50 rounded py-1"
                             >
                               Poner
                             </button>
                             <button
                               onClick={() => handleDeleteVariant(variant.id, product.id)}
-                              className="text-slate-300 hover:text-red-500 ml-1 transition-colors"
-                              title="Eliminar talla"
+                              className="text-slate-300 hover:text-red-500 ml-1"
                             >
                               🗑️
                             </button>
@@ -721,14 +693,14 @@ export default function InventoryTab({
               <h3 className="font-bold text-slate-900 text-base">✏️ Editar Producto General</h3>
               <button
                 onClick={() => setEditingItem(null)}
-                className="w-8 h-8 rounded-full bg-slate-200/60 hover:bg-slate-200 text-slate-600 font-bold flex items-center justify-center"
+                className="w-8 h-8 rounded-full bg-slate-200/60 font-bold"
               >
                 ×
               </button>
             </div>
             <form onSubmit={handleSaveEdit} className="p-6 flex flex-col gap-4 text-xs">
-              <div className="flex gap-4">
-                <div className="w-2/3">
+              <div className="flex gap-4 items-start">
+                <div className="w-1/2">
                   <label className="block font-bold text-slate-700 mb-1 uppercase">Nombre</label>
                   <input
                     type="text"
@@ -738,15 +710,43 @@ export default function InventoryTab({
                     className="w-full p-2.5 border border-slate-200 rounded-xl"
                   />
                 </div>
-                <div className="w-1/3">
+                <div className="w-1/4">
                   <label className="block font-bold text-slate-700 mb-1 uppercase">Categoría</label>
                   <input
                     type="text"
                     required
                     value={editingItem.category}
-                    onChange={(e) => setEditingItem({ ...editingItem, category: e.target.value })}
+                    onChange={(e) =>
+                      setEditingItem({ ...editingItem, category: e.target.value })
+                    }
                     className="w-full p-2.5 border border-slate-200 rounded-xl"
                   />
+                </div>
+                <div className="w-1/4">
+                  <label className="block font-bold text-slate-700 mb-1 uppercase flex items-center gap-1">
+                    Orden (Nº)
+                    <span 
+                      className="cursor-help text-purple-600 font-bold" 
+                      title="Sirve para ordenar los productos en la página principal de la tienda. Cuanto más pequeño sea el número (ej: 1, 2, 3), más arriba aparecerá colocado el producto."
+                    >
+                      ❓
+                    </span>
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    value={editingItem.store_order}
+                    onChange={(e) =>
+                      setEditingItem({
+                        ...editingItem,
+                        store_order: parseInt(e.target.value, 10) || 0,
+                      })
+                    }
+                    className="w-full p-2.5 border border-slate-200 rounded-xl"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1 leading-tight">
+                    💡 Menor nº = más arriba en la tienda.
+                  </p>
                 </div>
               </div>
               <div>
@@ -777,43 +777,6 @@ export default function InventoryTab({
                   placeholder="https://..."
                   className="w-full p-2.5 border border-slate-200 rounded-xl"
                 />
-              </div>
-              <div className="flex gap-4">
-                <div className="w-1/2">
-                  <label className="block font-bold text-slate-700 mb-1 uppercase">
-                    Alerta Stock Mínimo
-                  </label>
-                  <input
-                    type="number"
-                    required
-                    value={editingItem.min_stock_alert}
-                    onChange={(e) =>
-                      setEditingItem({
-                        ...editingItem,
-                        min_stock_alert: parseInt(e.target.value, 10) || 5,
-                      })
-                    }
-                    className="w-full p-2.5 border border-slate-200 rounded-xl"
-                  />
-                </div>
-                <div className="w-1/2">
-                  <label className="block font-bold text-slate-700 mb-1 uppercase">
-                    Precio Base (€)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.50"
-                    required
-                    value={editingItem.price}
-                    onChange={(e) =>
-                      setEditingItem({
-                        ...editingItem,
-                        price: parseFloat(e.target.value) || 0,
-                      })
-                    }
-                    className="w-full p-2.5 border border-slate-200 rounded-xl"
-                  />
-                </div>
               </div>
               <div className="mt-4 flex gap-3 justify-end">
                 <button

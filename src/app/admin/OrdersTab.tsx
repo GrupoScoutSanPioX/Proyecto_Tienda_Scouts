@@ -3,24 +3,26 @@
 import { useState } from 'react';
 import { supabase } from '../../lib/supabase';
 
-interface Variant {
+export interface Variant {
   id: string;
   size: string;
   price: number;
   stock: number;
+  min_stock_alert?: number;
 }
 
-interface Product {
+export interface Product {
   id: string;
   name: string;
   description: string;
   image_url: string;
   category: string;
-  min_stock_alert: number;
+  min_stock_alert?: number;
+  store_order?: number;
   product_variants: Variant[];
 }
 
-interface OrderItem {
+export interface OrderItem {
   id: string;
   order_id: string;
   variant_id: string;
@@ -30,7 +32,7 @@ interface OrderItem {
   size?: string;
 }
 
-interface Order {
+export interface Order {
   id: string;
   buyer_name: string;
   scout_unit: string;
@@ -61,7 +63,11 @@ export default function OrdersTab({
   const [orderSearchTerm, setOrderSearchTerm] = useState('');
   const [sortConfig, setSortConfig] = useState<'newest' | 'oldest' | 'amount_desc' | 'amount_asc'>('newest');
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
-  const [addingVariantToOrder, setAddingVariantToOrder] = useState<string>('');
+  
+  // Estados para el doble desplegable al añadir prenda a un pedido
+  const [selectedProductToAdd, setSelectedProductToAdd] = useState<string>('');
+  const [selectedVariantToAdd, setSelectedVariantToAdd] = useState<string>('');
+  
   const [addingQtyToOrder, setAddingQtyToOrder] = useState<number>(1);
   const [isUpdatingOrder, setIsUpdatingOrder] = useState(false);
 
@@ -375,17 +381,14 @@ export default function OrdersTab({
 
   const handleAddItemToOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingOrder || !addingVariantToOrder || addingQtyToOrder <= 0) return;
+    if (!editingOrder || !selectedVariantToAdd || addingQtyToOrder <= 0) return;
 
     setIsUpdatingOrder(true);
     try {
       let selectedVar: Variant | undefined;
-      for (const p of products) {
-        const found = p.product_variants.find((v) => v.id === addingVariantToOrder);
-        if (found) {
-          selectedVar = found;
-          break;
-        }
+      const product = products.find((p) => p.id === selectedProductToAdd);
+      if (product) {
+        selectedVar = product.product_variants.find((v) => v.id === selectedVariantToAdd);
       }
       if (!selectedVar) return;
 
@@ -428,7 +431,8 @@ export default function OrdersTab({
         .update({ total_amount: newTotal })
         .eq('id', editingOrder.id);
 
-      setAddingVariantToOrder('');
+      setSelectedProductToAdd('');
+      setSelectedVariantToAdd('');
       setAddingQtyToOrder(1);
       await fetchData();
     } finally {
@@ -448,12 +452,10 @@ export default function OrdersTab({
       );
     })
     .sort((a, b) => {
-      // 1. Los "Entregados" siempre van al fondo independientemente del orden elegido
       const aDelivered = a.status === 'Entregado' ? 1 : 0;
       const bDelivered = b.status === 'Entregado' ? 1 : 0;
       if (aDelivered !== bDelivered) return aDelivered - bDelivered;
 
-      // 2. Aplicamos la ordenación del desplegable
       if (sortConfig === 'newest') {
         return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
       }
@@ -469,6 +471,7 @@ export default function OrdersTab({
       return 0;
     });
 
+  const selectedProductObj = products.find((p) => p.id === selectedProductToAdd);
   return (
     <div>
       {/* BARRA SUPERIOR DE PEDIDOS: BUSCADOR Y ACCIONES MASIVAS */}
@@ -748,31 +751,48 @@ export default function OrdersTab({
                 )}
               </div>
 
-              {/* 2. AÑADIR OTRA PRENDA */}
+              {/* 2. AÑADIR OTRA PRENDA CON DOBLE DROPDOWN LEGIBLE */}
               <form
                 onSubmit={handleAddItemToOrder}
                 className="bg-slate-50 p-4 rounded-xl border border-slate-200/80 space-y-3"
               >
                 <h4 className="font-bold text-slate-700 uppercase tracking-wider text-[11px]">
-                  ➕ Añadir otra prenda al pedido
+                  ➕ Añadir prenda al pedido
                 </h4>
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full">
+                <div className="flex flex-col gap-2">
                   <select
                     required
-                    value={addingVariantToOrder}
-                    onChange={(e) => setAddingVariantToOrder(e.target.value)}
-                    className="flex-1 min-w-0 p-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold outline-none focus:border-purple-600 truncate"
+                    value={selectedProductToAdd}
+                    onChange={(e) => {
+                      setSelectedProductToAdd(e.target.value);
+                      setSelectedVariantToAdd('');
+                    }}
+                    className="w-full p-2.5 bg-white border border-slate-200 rounded-xl font-semibold outline-none focus:border-purple-600"
                   >
-                    <option value="">Selecciona prenda y talla...</option>
-                    {products.map((p) =>
-                      p.product_variants.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {p.name} — Talla {v.size} ({Number(v.price).toFixed(2)} € | Stock: {v.stock})
-                        </option>
-                      ))
-                    )}
+                    <option value="">1º Selecciona un producto...</option>
+                    {products.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({p.category})
+                      </option>
+                    ))}
                   </select>
-                  <div className="flex items-center gap-2 shrink-0">
+
+                  <div className="flex gap-2 items-center">
+                    <select
+                      required
+                      disabled={!selectedProductToAdd}
+                      value={selectedVariantToAdd}
+                      onChange={(e) => setSelectedVariantToAdd(e.target.value)}
+                      className="flex-1 p-2.5 bg-white border border-slate-200 rounded-xl font-semibold outline-none focus:border-purple-600 disabled:opacity-50"
+                    >
+                      <option value="">2º Selecciona la talla...</option>
+                      {selectedProductObj?.product_variants.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          Talla {v.size} — {Number(v.price).toFixed(2)} € (Stock: {v.stock})
+                        </option>
+                      ))}
+                    </select>
+
                     <input
                       type="number"
                       min={1}
@@ -785,7 +805,7 @@ export default function OrdersTab({
                     />
                     <button
                       type="submit"
-                      disabled={isUpdatingOrder || !addingVariantToOrder}
+                      disabled={isUpdatingOrder || !selectedVariantToAdd}
                       className="bg-purple-700 hover:bg-purple-800 disabled:opacity-50 text-white font-bold px-4 py-2.5 rounded-xl shrink-0 transition-colors"
                     >
                       Añadir

@@ -10,7 +10,8 @@ interface Product { id: string; name: string; description: string; image_url: st
 async function getProducts(): Promise<Product[]> {
   const { data, error } = await supabase
     .from('products')
-    .select('id, name, description, image_url, category, product_variants(id, size, price, stock)');
+    .select('id, name, description, image_url, category, store_order, product_variants(id, size, price, stock)')
+    .order('store_order', { ascending: true }); // <-- ESTO ORDENa LA TIENDA PARA LOS PADRES
 
   if (error) { console.error('Error al cargar productos:', error.message); return []; }
   return (data as Product[]).filter(producto => producto.product_variants.length > 0);

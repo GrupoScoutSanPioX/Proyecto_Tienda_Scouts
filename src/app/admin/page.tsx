@@ -11,6 +11,7 @@ interface Variant {
   size: string;
   price: number;
   stock: number;
+  min_stock_alert: number;
 }
 
 interface Product {
@@ -19,7 +20,7 @@ interface Product {
   description: string;
   image_url: string;
   category: string;
-  min_stock_alert: number;
+  store_order: number;
   product_variants: Variant[];
 }
 
@@ -46,11 +47,6 @@ interface Order {
   items?: OrderItem[];
 }
 
-interface TopProduct {
-  name: string;
-  totalSold: number;
-}
-
 interface StockAnalysisItem {
   productId: string;
   variantId: string;
@@ -60,6 +56,7 @@ interface StockAnalysisItem {
   currentStock: number;
   totalSold: number;
   suggestedMinStock: number;
+  currentMinAlert: number;
 }
 
 const SIZE_ORDER: { [key: string]: number } = {
@@ -79,24 +76,19 @@ export default function AdminPage() {
 
   const [activeTab, setActiveTab] = useState<'orders' | 'inventory' | 'stock_stats'>('orders');
   
-  // Datos principales
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [topProducts, setTopProducts] = useState<TopProduct[]>([]);
   const [stockAnalysis, setStockAnalysis] = useState<StockAnalysisItem[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Estados compartidos
   const [stockStatsSearch, setStockStatsSearch] = useState('');
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
 
-  // Cálculos de tesorería
   const totalCobrado = (orders || [])
     .filter((o) => o.status === 'Pagado' || o.status === 'Entregado')
     .reduce((sum, order) => sum + Number(order.total_amount), 0);
 
   const cajaTotal = cajaInicial + totalCobrado;
-
   const dineroEsperado = (orders || [])
     .filter((o) => o.status === 'Pendiente' || o.status === 'Reservado')
     .reduce((sum, order) => sum + Number(order.total_amount), 0);
@@ -122,58 +114,31 @@ export default function AdminPage() {
   async function fetchData() {
     setLoading(true);
     
-    // 1. DISPARADOR SILENCIOSO DE CORREOS Y LIMPIEZA
     try {
       fetch('/api/cron').catch(() => {});
       const nowISO = new Date().toISOString();
-      const { data: expiredOrders } = await supabase
-        .from('orders')
-        .select('id')
-        .eq('status', 'Pendiente')
-        .not('expires_at', 'is', null)
-        .lt('expires_at', nowISO);
-
+      const { data: expiredOrders } = await supabase.from('orders').select('id').eq('status', 'Pendiente').not('expires_at', 'is', null).lt('expires_at', nowISO);
       if (expiredOrders && expiredOrders.length > 0) {
         const expiredIds = expiredOrders.map((o) => o.id);
-        const { data: expiredItems } = await supabase
-          .from('order_items')
-          .select('variant_id, quantity')
-          .in('order_id', expiredIds);
-
+        const { data: expiredItems } = await supabase.from('order_items').select('variant_id, quantity').in('order_id', expiredIds);
         if (expiredItems && expiredItems.length > 0) {
           for (const item of expiredItems) {
             if (!item.variant_id) continue;
-            const { data: vData } = await supabase
-              .from('product_variants')
-              .select('stock')
-              .eq('id', item.variant_id)
-              .single();
-            if (vData) {
-              await supabase
-                .from('product_variants')
-                .update({ stock: vData.stock + item.quantity })
-                .eq('id', item.variant_id);
-            }
+            const { data: vData } = await supabase.from('product_variants').select('stock').eq('id', item.variant_id).single();
+            if (vData) await supabase.from('product_variants').update({ stock: vData.stock + item.quantity }).eq('id', item.variant_id);
           }
         }
         await supabase.from('orders').delete().in('id', expiredIds);
       }
-    } catch (cleanErr) {
-      console.error('Error auto-limpieza:', cleanErr);
-    }
+    } catch (cleanErr) {}
 
-    // 2. CONFIGURACIÓN DE CAJA
-    const { data: configData } = await supabase
-      .from('configuracion')
-      .select('caja_inicial')
-      .eq('id', 1)
-      .maybeSingle();
+    const { data: configData } = await supabase.from('configuracion').select('caja_inicial').eq('id', 1).maybeSingle();
     if (configData) setCajaInicial(configData.caja_inicial || 0);
 
-    // 3. PRODUCTOS E INVENTARIO
     const { data: invData } = await supabase
       .from('products')
-      .select('id, name, description, image_url, category, min_stock_alert, product_variants (id, size, price, stock)')
+      .select('id, name, description, image_url, category, store_order, product_variants (id, size, price, stock, min_stock_alert)')
+      .order('store_order', { ascending: true })
       .order('name');
 
     let loadedProducts: Product[] = [];
@@ -187,25 +152,13 @@ export default function AdminPage() {
     const variantLookup: { [variantId: string]: any } = {};
     loadedProducts.forEach((p) => {
       p.product_variants.forEach((v) => {
-        variantLookup[v.id] = {
-          productId: p.id,
-          productName: p.name,
-          category: p.category,
-          size: v.size,
-          price: v.price,
-          stock: v.stock,
-        };
+        variantLookup[v.id] = { productId: p.id, productName: p.name, category: p.category, size: v.size, price: v.price, stock: v.stock };
       });
     });
 
-    // 4. PEDIDOS
-    const { data: ordData } = await supabase
-      .from('orders')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const { data: ordData } = await supabase.from('orders').select('*').order('created_at', { ascending: false });
     const { data: allItemsData } = await supabase.from('order_items').select('*');
 
-    // 5. CÁLCULO DE STOCK DINÁMICO E INTELIGENTE
     if (allItemsData && loadedProducts.length > 0) {
       const salesByVariant: { [variantId: string]: number } = {};
       allItemsData.forEach((item: any) => {
@@ -216,16 +169,8 @@ export default function AdminPage() {
       loadedProducts.forEach((p) => {
         p.product_variants.forEach((v) => {
           const sold = salesByVariant[v.id] || 0;
-          
           let suggested = 0;
-          if (sold === 0) {
-            suggested = 1; // Sin ventas: 1 unidad de muestra en el local
-          } else if (sold <= 3) {
-            suggested = sold + 1; // Baja rotación: ventas + 1 (evita acumular tallas raras)
-          } else {
-            // Rotación media/alta: cubre todo lo vendido el curso pasado + 1 de colchón
-            suggested = sold + 1;
-          }
+          if (sold === 0) suggested = 1; else suggested = sold + 1;
 
           analysisList.push({
             productId: p.id,
@@ -236,28 +181,13 @@ export default function AdminPage() {
             currentStock: v.stock,
             totalSold: sold,
             suggestedMinStock: suggested,
+            currentMinAlert: v.min_stock_alert || 0
           });
         });
       });
 
       analysisList.sort((a, b) => b.totalSold - a.totalSold);
       setStockAnalysis(analysisList);
-
-      // Top Ventas
-      const salesMap: { [key: string]: number } = {};
-      allItemsData.forEach((item: any) => {
-        const found = variantLookup[item.variant_id];
-        if (found) {
-          const keyName = `${found.productName} (Talla: ${found.size})`;
-          salesMap[keyName] = (salesMap[keyName] || 0) + item.quantity;
-        }
-      });
-
-      const rankingArray: TopProduct[] = Object.keys(salesMap)
-        .map((name) => ({ name, totalSold: salesMap[name] }))
-        .sort((a, b) => b.totalSold - a.totalSold)
-        .slice(0, 5);
-      setTopProducts(rankingArray);
     }
 
     if (ordData) {
@@ -266,25 +196,17 @@ export default function AdminPage() {
         const mappedItems: OrderItem[] = rawItems.map((it: any) => {
           const found = variantLookup[it.variant_id];
           return {
-            id: it.id,
-            order_id: it.order_id,
-            variant_id: it.variant_id,
-            quantity: it.quantity,
-            unit_price: Number(it.unit_price),
-            product_name: found ? found.productName : 'Artículo descatalogado',
-            size: found ? found.size : '-',
+            id: it.id, order_id: it.order_id, variant_id: it.variant_id, quantity: it.quantity, unit_price: Number(it.unit_price),
+            product_name: found ? found.productName : 'Artículo descatalogado', size: found ? found.size : '-',
           };
         });
         return { ...ord, items: mappedItems };
       });
       setOrders(enrichedOrders);
-      if (editingOrder) {
-        setEditingOrder(enrichedOrders.find((o) => o.id === editingOrder.id) || null);
-      }
+      if (editingOrder) setEditingOrder(enrichedOrders.find((o) => o.id === editingOrder.id) || null);
     }
     setLoading(false);
   }
-
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoggingIn(true);
@@ -338,6 +260,16 @@ export default function AdminPage() {
     const nuevaCajaInicial = cajaInicial - parsed;
     setCajaInicial(nuevaCajaInicial);
     await supabase.from('configuracion').upsert({ id: 1, caja_inicial: nuevaCajaInicial });
+  };
+
+  const handleApplySuggestedMinStock = async () => {
+    if (!window.confirm("¿Asignar de forma automática el 'Stock Mínimo Sugerido' como la nueva alerta para cada talla?\n\nTranquilo, esto NO modificará tu cantidad de prendas en el almacén, solo fijará el límite para que el sistema te avise correctamente esta ronda.")) return;
+    
+    for (const item of stockAnalysis) {
+      await supabase.from('product_variants').update({ min_stock_alert: item.suggestedMinStock }).eq('id', item.variantId);
+    }
+    alert('¡Mínimos actualizados con éxito en todas las tallas!');
+    fetchData();
   };
 
   const filteredStockAnalysis = (stockAnalysis || []).filter(
@@ -423,7 +355,7 @@ export default function AdminPage() {
               onClick={fetchData}
               className="bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 px-4 py-2 rounded-xl text-xs font-bold shadow-xs transition-colors"
             >
-              🔄 Actualizar datos
+              🔄 Refrescar web
             </button>
             <Link
               href="/"
@@ -431,61 +363,6 @@ export default function AdminPage() {
             >
               ← Volver a la Tienda
             </Link>
-          </div>
-        </div>
-
-        {/* TARJETAS DE TESORERÍA */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-          <div className="bg-white border border-emerald-200 p-5 rounded-2xl shadow-xs flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center text-2xl">
-                💶
-              </div>
-              <div>
-                <h3 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                  Dinero Total en Caja
-                </h3>
-                <p className="text-2xl sm:text-3xl font-black text-emerald-600 mt-0.5">
-                  {cajaTotal.toFixed(2)} €
-                </p>
-                <p className="text-[11px] font-semibold text-slate-400 mt-0.5">
-                  Base ({cajaInicial.toFixed(2)} €) + Cobrado ({totalCobrado.toFixed(2)} €)
-                </p>
-              </div>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <button
-                onClick={handleEditCaja}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-colors"
-              >
-                ✏️ Ajustar Base
-              </button>
-              <button
-                onClick={handleRestarCaja}
-                className="bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-colors"
-              >
-                ➖ Extraer Gasto
-              </button>
-            </div>
-          </div>
-
-          <div className="bg-amber-50/70 border border-amber-200 p-5 rounded-2xl shadow-xs flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-amber-100 text-amber-700 rounded-2xl flex items-center justify-center text-2xl">
-                ⏳
-              </div>
-              <div>
-                <h3 className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">
-                  Dinero Esperado (Pendiente de cobro)
-                </h3>
-                <p className="text-2xl sm:text-3xl font-black text-amber-600 mt-0.5">
-                  {dineroEsperado.toFixed(2)} €
-                </p>
-                <p className="text-[11px] font-semibold text-amber-700/70 mt-0.5">
-                  Suma de pedidos Pendientes y Reservados
-                </p>
-              </div>
-            </div>
           </div>
         </div>
 
@@ -532,23 +409,76 @@ export default function AdminPage() {
           ) : (
             <>
               {activeTab === 'orders' && (
-                <OrdersTab
-                  orders={orders || []}
-                  setOrders={setOrders}
-                  products={products || []}
-                  fetchData={fetchData}
-                  editingOrder={editingOrder}
-                  setEditingOrder={setEditingOrder}
-                />
+                <>
+                  {/* TARJETAS DE TESORERÍA (SOLO EN PEDIDOS) */}
+                  <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4 border-b border-slate-100 bg-slate-50/30">
+                    <div className="bg-white border border-emerald-200 p-5 rounded-2xl shadow-xs flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center text-2xl">
+                          💶
+                        </div>
+                        <div>
+                          <h3 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                            Dinero Total en Caja
+                          </h3>
+                          <p className="text-2xl sm:text-3xl font-black text-emerald-600 mt-0.5">
+                            {cajaTotal.toFixed(2)} €
+                          </p>
+                          <p className="text-[11px] font-semibold text-slate-400 mt-0.5">
+                            Base ({cajaInicial.toFixed(2)} €) + Cobrado ({totalCobrado.toFixed(2)} €)
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <button
+                          onClick={handleEditCaja}
+                          className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-colors"
+                        >
+                          ✏️ Ajustar Base
+                        </button>
+                        <button
+                          onClick={handleRestarCaja}
+                          className="bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-colors"
+                        >
+                          ➖ Extraer Gasto
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="bg-amber-50/70 border border-amber-200 p-5 rounded-2xl shadow-xs flex items-center gap-4">
+                      <div className="w-12 h-12 bg-amber-100 text-amber-700 rounded-2xl flex items-center justify-center text-2xl">
+                        ⏳
+                      </div>
+                      <div>
+                        <h3 className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">
+                          Dinero Esperado (Pendiente de cobro)
+                        </h3>
+                        <p className="text-2xl sm:text-3xl font-black text-amber-600 mt-0.5">
+                          {dineroEsperado.toFixed(2)} €
+                        </p>
+                        <p className="text-[11px] font-semibold text-amber-700/70 mt-0.5">
+                          Suma de pedidos Pendientes y Reservados
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <OrdersTab
+                    orders={orders || []}
+                    setOrders={setOrders}
+                    products={products || []}
+                    fetchData={fetchData}
+                    editingOrder={editingOrder}
+                    setEditingOrder={setEditingOrder}
+                  />
+                </>
               )}
 
               {activeTab === 'inventory' && (
                 <InventoryTab
                   products={products || []}
                   setProducts={setProducts}
-                  topProducts={topProducts || []}
                   fetchData={fetchData}
-                  stockAnalysis={stockAnalysis || []}
                 />
               )}
 
@@ -560,18 +490,26 @@ export default function AdminPage() {
                         📊 Análisis de Demanda y Stock Recomendado
                       </h3>
                       <p className="text-xs text-slate-500 mt-1 max-w-2xl">
-                        Calculado dinámicamente según el historial. Usa el botón "Auto-Rellenar" en la pestaña de Inventario para ajustar el stock físico a estos valores.
+                        Cálculo visual basado en el historial. Puedes pulsar el botón verde para guardar automáticamente estos mínimos en cada talla.
                       </p>
                     </div>
-                    <div className="w-full sm:w-72 relative">
-                      <span className="absolute left-3 top-2.5 text-slate-400">🔍</span>
-                      <input
-                        type="text"
-                        placeholder="Buscar por polo, sudadera..."
-                        value={stockStatsSearch}
-                        onChange={(e) => setStockStatsSearch(e.target.value)}
-                        className="w-full pl-9 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-purple-600 transition-colors"
-                      />
+                    <div className="flex gap-3 w-full sm:w-auto flex-wrap">
+                      <div className="relative flex-1 sm:w-64">
+                        <span className="absolute left-3 top-2.5 text-slate-400">🔍</span>
+                        <input
+                          type="text"
+                          placeholder="Buscar por polo, sudadera..."
+                          value={stockStatsSearch}
+                          onChange={(e) => setStockStatsSearch(e.target.value)}
+                          className="w-full pl-9 pr-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-purple-600 transition-colors"
+                        />
+                      </div>
+                      <button
+                        onClick={handleApplySuggestedMinStock}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-xs transition-colors whitespace-nowrap"
+                      >
+                        ✨ Asignar mínimos del año
+                      </button>
                     </div>
                   </div>
 
@@ -580,11 +518,11 @@ export default function AdminPage() {
                       <thead>
                         <tr className="border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase bg-slate-100">
                           <th className="p-4">Producto</th>
-                          <th className="p-4">Categoría</th>
                           <th className="p-4 text-center">Talla</th>
                           <th className="p-4 text-center">Total Vendido 📈</th>
                           <th className="p-4 text-center">Stock Actual 📦</th>
-                          <th className="p-4 text-center">Stock Mínimo Sugerido 💡</th>
+                          <th className="p-4 text-center">Mínimo Fijado 🔔</th>
+                          <th className="p-4 text-center bg-purple-50 text-purple-900">A Pedir a Fábrica 🏭</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 text-xs">
@@ -596,11 +534,12 @@ export default function AdminPage() {
                           </tr>
                         ) : (
                           filteredStockAnalysis.map((item) => {
-                            const needsRestock = item.currentStock < item.suggestedMinStock;
+                            const needsRestock = item.currentStock < item.currentMinAlert;
+                            const aPedir = Math.max(0, item.currentMinAlert - item.currentStock);
+                            
                             return (
                               <tr key={item.variantId} className="hover:bg-slate-50 transition-colors">
                                 <td className="p-4 font-bold text-slate-900">{item.productName}</td>
-                                <td className="p-4 text-slate-500">{item.category}</td>
                                 <td className="p-4 text-center font-bold">
                                   <span className="px-2.5 py-1 bg-slate-100 rounded-lg">
                                     {item.size}
@@ -625,13 +564,22 @@ export default function AdminPage() {
                                 <td className="p-4 text-center">
                                   {needsRestock ? (
                                     <span className="bg-amber-100 text-amber-800 font-bold px-3 py-1 rounded-lg">
-                                      ⚠️ Recomendar al menos {item.suggestedMinStock}
+                                      ⚠️ Mínimo {item.currentMinAlert} (Sugerido {item.suggestedMinStock})
                                     </span>
                                   ) : (
                                     <span className="text-slate-400 font-medium">
-                                      Stock adecuado (&ge; {item.suggestedMinStock})
+                                      Adecuado (Mínimo {item.currentMinAlert})
                                     </span>
                                   )}
+                                </td>
+                                <td className="p-4 text-center bg-purple-50/50">
+                                   {aPedir > 0 ? (
+                                     <span className="bg-purple-100 text-purple-800 font-black px-3 py-1.5 rounded-lg border border-purple-200">
+                                       Pedir {aPedir} uds.
+                                     </span>
+                                   ) : (
+                                     <span className="text-slate-400 font-medium">-</span>
+                                   )}
                                 </td>
                               </tr>
                             );
