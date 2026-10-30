@@ -73,6 +73,7 @@ export default function AdminPage() {
   const [passwordInput, setPasswordInput] = useState('');
   const [loginError, setLoginError] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'orders' | 'inventory' | 'stock_stats'>('orders');
   
@@ -278,6 +279,38 @@ export default function AdminPage() {
       item.category.toLowerCase().includes(stockStatsSearch.toLowerCase()) ||
       item.size.toLowerCase().includes(stockStatsSearch.toLowerCase())
   );
+
+  const handleSendFactoryList = async () => {
+    const aPedir = stockAnalysis
+      .map(item => ({
+        ...item,
+        cantidadPedir: Math.max(0, item.currentMinAlert - item.currentStock)
+      }))
+      .filter(item => item.cantidadPedir > 0);
+
+    if (aPedir.length === 0) {
+      alert('¡Todo está perfecto! No necesitas pedir nada a fábrica ahora mismo.');
+      return;
+    }
+
+    if (!window.confirm(`Vas a enviar un correo con ${aPedir.length} referencias para pedir a fábrica. ¿Continuar?`)) return;
+
+    setIsSendingEmail(true);
+    try {
+      const res = await fetch('/api/pedir-fabrica', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lista: aPedir })
+      });
+      
+      if (res.ok) alert('✅ ¡Lista enviada a tu correo con éxito!');
+      else alert('❌ Hubo un error al enviar el correo.');
+    } catch (e) {
+      alert('❌ Error de conexión al enviar.');
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
 
   if (!isLoggedIn) {
     return (
@@ -509,6 +542,13 @@ export default function AdminPage() {
                         className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-xs transition-colors whitespace-nowrap"
                       >
                         ✨ Asignar mínimos del año
+                      </button>
+                      <button
+                        onClick={handleSendFactoryList}
+                        disabled={isSendingEmail}
+                        className="bg-purple-700 hover:bg-purple-800 disabled:bg-purple-400 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-xs transition-colors whitespace-nowrap flex items-center gap-1"
+                      >
+                        {isSendingEmail ? '⏳ Enviando...' : '📧 Enviar lista a fábrica'}
                       </button>
                     </div>
                   </div>
