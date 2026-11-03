@@ -71,6 +71,7 @@ export default function AdminPage() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [adminName, setAdminName] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isSendingEmail, setIsSendingEmail] = useState(false);
@@ -234,33 +235,31 @@ export default function AdminPage() {
     setIsLoggingIn(false);
   };
 
-  const handleEditCaja = async () => {
-    const input = window.prompt(
-      `Base actual (sin contar ventas): ${cajaInicial.toFixed(2)} €\n\n¿Cuánto dinero quieres fijar como base o ajuste inicial?\n(Usa un punto para los céntimos, ej: 50.50)`
-    );
-    if (input === null || input.trim() === '') return;
-    const parsed = parseFloat(input);
-    if (isNaN(parsed)) {
-      alert('Por favor, introduce un número válido.');
-      return;
-    }
-    setCajaInicial(parsed);
-    await supabase.from('configuracion').upsert({ id: 1, caja_inicial: parsed });
-  };
+  const handleCuadrarCaja = async () => {
+    const dineroPedidos = orders
+      .filter((o) => o.status === 'Pagado' || o.status === 'Entregado')
+      .reduce((sum, o) => sum + Number(o.total_amount), 0);
 
-  const handleRestarCaja = async () => {
     const input = window.prompt(
-      `Dinero Total en la caja ahora mismo: ${cajaTotal.toFixed(2)} €\n\n¿Cuánto dinero vas a SACAR para gastos o material?\n(Usa un punto para céntimos, ej: 45.50)`
+      `Dinero Total teórico en caja: ${cajaTotal.toFixed(2)} €\n\n¿Cuánto dinero FÍSICO hay ahora mismo en la caja de caudales metálica? Cuéntalo todo e introdúcelo aquí:\n(Usa un punto para los decimales, ej: 124.50)`
     );
+
     if (input === null || input.trim() === '') return;
-    const parsed = parseFloat(input);
-    if (isNaN(parsed) || parsed <= 0) {
-      alert('Por favor, introduce un número válido mayor que 0.');
+    
+    const parsed = parseFloat(input.replace(',', '.')); // Aceptamos coma o punto
+    
+    if (isNaN(parsed)) {
+      alert('❌ Por favor, introduce un número válido.');
       return;
     }
-    const nuevaCajaInicial = cajaInicial - parsed;
-    setCajaInicial(nuevaCajaInicial);
-    await supabase.from('configuracion').upsert({ id: 1, caja_inicial: nuevaCajaInicial });
+
+    // El nuevo "fondo inicial" será el dinero físico real MENOS lo que hemos cobrado por pedidos
+    const nuevoFondo = parsed - dineroPedidos;
+    
+    setCajaInicial(nuevoFondo);
+    await supabase.from('configuracion').upsert({ id: 1, caja_inicial: nuevoFondo });
+    
+    alert(`✅ Caja cuadrada. El sistema se ha ajustado para marcar exactamente ${parsed.toFixed(2)} €.`);
   };
 
   const handleApplySuggestedMinStock = async () => {
@@ -284,8 +283,7 @@ export default function AdminPage() {
     const aPedir = stockAnalysis
       .map(item => ({
         ...item,
-        cantidadPedir: Math.max(0, item.currentMinAlert - item.currentStock)
-      }))
+      cantidadPedir: Math.max(0, (item.currentMinAlert * 2) - item.currentStock)      }))
       .filter(item => item.cantidadPedir > 0);
 
     if (aPedir.length === 0) {
@@ -312,6 +310,53 @@ export default function AdminPage() {
     }
   };
 
+  const handleVerPendientes = async () => {
+    const { data: pedidosPendientes, error } = await supabase
+      .from('orders')
+      .select(`
+        status,
+        order_items (
+          quantity,
+          product_variants (
+            size,
+            products ( name )
+          )
+        )
+      `)
+      .neq('status', 'Entregado');
+
+    if (error) {
+      alert('❌ Error al buscar pendientes: ' + error.message);
+      return;
+    }
+
+    if (!pedidosPendientes || pedidosPendientes.length === 0) {
+      alert('¡Todo al día! No hay artículos pendientes de entregar. 🎉');
+      return;
+    }
+
+    const conteoArticulos: Record<string, number> = {};
+
+    pedidosPendientes.forEach(pedido => {
+      pedido.order_items.forEach(item => {
+        // @ts-ignore
+        const nombre = item.product_variants?.products?.name || 'Artículo Desconocido';
+        // @ts-ignore
+        const talla = item.product_variants?.size || '?';
+        const clave = `${nombre} (Talla: ${talla})`;
+        if (!conteoArticulos[clave]) conteoArticulos[clave] = 0;
+        conteoArticulos[clave] += item.quantity;
+      });
+    });
+
+    const textoLista = Object.entries(conteoArticulos)
+      .sort()
+      .map(([articulo, cantidad]) => `🔹 ${cantidad}x - ${articulo}`)
+      .join('\n');
+
+    alert(`📦 RESUMEN PARA ENTREGAR ESTE SÁBADO:\n\n${textoLista}\n\n(Incluye pedidos Pendientes y Pagados)`);
+  };
+
   if (!isLoggedIn) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
@@ -335,20 +380,30 @@ export default function AdminPage() {
                 placeholder="Ej: Akela"
               />
             </div>
-            <div>
+           <div>
               <label className="block text-xs font-bold text-slate-700 mb-1 uppercase tracking-wider">
                 Contraseña
               </label>
-              <input
-                type="password"
-                required
-                value={passwordInput}
-                onChange={(e) => setPasswordInput(e.target.value)}
-                className={`w-full p-3 bg-slate-50 border rounded-xl text-sm tracking-widest outline-none transition-colors font-semibold ${
-                  loginError ? 'border-red-500 bg-red-50' : 'border-slate-200 focus:border-purple-600'
-                }`}
-                placeholder="••••••••"
-              />
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  className={`w-full p-3 pr-12 bg-slate-50 border rounded-xl text-sm tracking-widest outline-none transition-colors font-semibold ${
+                    loginError ? 'border-red-500 bg-red-50' : 'border-slate-200 focus:border-purple-600'
+                  }`}
+                  placeholder="••••••••"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-purple-700 transition-colors p-1"
+                  title={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                >
+                  {showPassword ? '🙈' : '👁️'}
+                </button>
+              </div>
               {loginError && (
                 <p className="text-red-600 text-[11px] font-bold mt-1.5">
                   Usuario no autorizado o contraseña incorrecta.
@@ -409,8 +464,7 @@ export default function AdminPage() {
                 : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
             }`}
           >
-            📋 Registro de Pedidos ({(orders || []).length})
-          </button>
+            📋 Registro de Pedidos ({(orders || []).filter(o => o.status !== 'Entregado').length})          </button>
           <button
             onClick={() => setActiveTab('inventory')}
             className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${
@@ -464,16 +518,10 @@ export default function AdminPage() {
                       </div>
                       <div className="flex flex-col gap-1.5">
                         <button
-                          onClick={handleEditCaja}
-                          className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-colors"
+                          onClick={handleCuadrarCaja}
+                          className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-xs transition-colors whitespace-nowrap flex items-center gap-2"
                         >
-                          ✏️ Ajustar Base
-                        </button>
-                        <button
-                          onClick={handleRestarCaja}
-                          className="bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-colors"
-                        >
-                          ➖ Extraer Gasto
+                          ⚖️ Cuadrar Caja Física
                         </button>
                       </div>
                     </div>
@@ -549,6 +597,12 @@ export default function AdminPage() {
                         className="bg-purple-700 hover:bg-purple-800 disabled:bg-purple-400 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-xs transition-colors whitespace-nowrap flex items-center gap-1"
                       >
                         {isSendingEmail ? '⏳ Enviando...' : '📧 Enviar lista a fábrica'}
+                      </button>
+                      <button
+                        onClick={handleVerPendientes}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-xs transition-colors whitespace-nowrap flex items-center gap-1"
+                      >
+                        🛍️ Ver pendientes de entregar
                       </button>
                     </div>
                   </div>

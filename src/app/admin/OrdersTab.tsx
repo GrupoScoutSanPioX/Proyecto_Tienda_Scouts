@@ -547,14 +547,14 @@ export default function OrdersTab({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 text-xs">
-            {sortedAndFilteredOrders.length === 0 ? (
+            {sortedAndFilteredOrders.filter(o => o.status !== 'Entregado').length === 0 ? (
               <tr>
                 <td colSpan={7} className="p-12 text-center text-slate-400">
-                  No hay pedidos que coincidan con la búsqueda.
+                  No hay pedidos pendientes que coincidan con la búsqueda.
                 </td>
               </tr>
             ) : (
-              sortedAndFilteredOrders.map((order) => (
+              sortedAndFilteredOrders.filter(o => o.status !== 'Entregado').map((order) => (
                 <tr
                   key={order.id}
                   className={`group transition-colors ${
@@ -669,6 +669,87 @@ export default function OrdersTab({
           </tbody>
         </table>
       </div>
+
+      {/* --- CAJÓN DESPLEGABLE DE HISTORIAL --- */}
+      {sortedAndFilteredOrders.filter(order => order.status === 'Entregado').length > 0 && (
+        <details className="mt-8 group bg-slate-50 border border-slate-200 rounded-xl shadow-sm mb-8 mx-1">
+          <summary className="font-bold text-slate-700 cursor-pointer list-none flex justify-between items-center hover:text-purple-700 transition-colors p-5">
+            <span className="flex items-center gap-2">
+              <span>📦 Historial de pedidos entregados</span>
+              <span className="bg-slate-200 text-slate-600 px-2.5 py-0.5 rounded-full text-[11px]">
+                {sortedAndFilteredOrders.filter(order => order.status === 'Entregado').length}
+              </span>
+            </span>
+            <span className="group-open:rotate-180 transition-transform text-xl text-slate-400">▾</span>
+          </summary>
+          
+          <div className="overflow-x-auto border-t border-slate-200">
+            <table className="w-full text-left border-collapse">
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {sortedAndFilteredOrders.filter(order => order.status === 'Entregado').map((order) => (
+                  <tr key={order.id} className="bg-white/50 opacity-70 hover:opacity-100 transition-opacity">
+                    <td className="p-4 text-center w-10">
+                      <input
+                        type="checkbox"
+                        checked={selectedOrders.includes(order.id)}
+                        onChange={() => toggleOrderSelection(order.id)}
+                        className="rounded border-slate-300 cursor-pointer"
+                      />
+                    </td>
+                    <td className="p-4">
+                      <div className="font-bold text-slate-900 text-sm">{order.buyer_name}</div>
+                      {order.email && <div className="text-[11px] text-slate-400">{order.email}</div>}
+                      <div className="mt-2 space-y-1">
+                        {order.items && order.items.length > 0 ? (
+                          order.items.map((item) => (
+                            <div key={item.id} className="inline-flex items-center gap-1.5 bg-slate-100 text-slate-700 px-2.5 py-1 rounded-lg text-[11px] font-medium mr-1.5 mb-1">
+                              <span className="font-bold text-purple-700">{item.quantity}x</span>
+                              <span>{item.product_name}</span>
+                              <span className="text-slate-400 font-bold">(Talla {item.size})</span>
+                            </div>
+                          ))
+                        ) : (
+                          <span className="text-[11px] italic text-slate-400">🚫 Sin artículos</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700">{order.scout_unit}</span>
+                    </td>
+                    <td className="p-4 text-slate-500 whitespace-nowrap">
+                      {new Date(order.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                    <td className="p-4 font-extrabold text-slate-900 text-sm whitespace-nowrap">
+                      {Number(order.total_amount).toFixed(2)} €
+                    </td>
+                    <td className="p-4">
+                      <select
+                        value={order.status}
+                        onChange={(e) => handleStatusChange(order.id, e.target.value)}
+                        className="text-xs font-bold px-3 py-1.5 rounded-xl border cursor-pointer outline-none transition-colors bg-emerald-50 text-emerald-700 border-emerald-200"
+                      >
+                        <option value="Pendiente">⏳ Pendiente</option>
+                        <option value="Reservado">🛡️ Reservado</option>
+                        <option value="Pagado">💸 Pagado</option>
+                        <option value="Entregado">✅ Entregado</option>
+                      </select>
+                    </td>
+                    <td className="p-4 text-center whitespace-nowrap">
+                      <button
+                        onClick={() => handleDeleteOrders([order.id])}
+                        className="text-slate-400 hover:text-red-600 px-2 py-1.5 rounded-lg transition-colors text-sm"
+                        title="Eliminar pedido"
+                      >
+                        🗑️
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
 
       {/* MODAL DE EDICIÓN DE PEDIDO */}
       {editingOrder && (
